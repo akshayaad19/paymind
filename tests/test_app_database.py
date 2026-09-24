@@ -21,7 +21,8 @@ def test_customer_must_have_payer_id(db):
     with pytest.raises(ValueError):
         db.add_user("u_x", "X", "x@example.com", "customer")
     with pytest.raises(sqlite3.IntegrityError):  # the database enforces it too
-        db.conn.execute("INSERT INTO users VALUES ('u_y', 'Y', 'y@example.com', 'customer', NULL, 'now')")
+        db.conn.execute("INSERT INTO users (user_id, name, email, role, payer_id, created_at) "
+                        "VALUES ('u_y', 'Y', 'y@example.com', 'customer', NULL, 'now')")
 
 
 def test_unknown_role_rejected(db):
@@ -61,3 +62,18 @@ def test_initial_db_untouched(db):
     db.log_action(db.get_user("u_asha"), "list_invoices", {}, "success")
     db.add_user("u_new", "New", "new@example.com", "accountant")
     assert INITIAL_DB.read_bytes() == before
+
+
+def test_login_with_demo_password(db):
+    assert db.authenticate("asha@paymind-demo.example", "asha-demo-123").user_id == "u_asha"
+    assert db.authenticate("  ASHA@paymind-demo.example ", "asha-demo-123") is not None  # email is case/space-insensitive
+    assert db.authenticate("asha@paymind-demo.example", "wrong") is None
+    assert db.authenticate("nobody@example.com", "asha-demo-123") is None
+
+
+def test_passwords_are_never_stored_in_plain_text(db):
+    stored = [r[0] for r in db.conn.execute("SELECT password_hash FROM users")]
+    assert all(h.startswith("scrypt$") and "demo-123" not in h for h in stored)
+    db.set_password("u_rahul", "new-secret-1")
+    assert db.authenticate("rahul.sharma@example.com", "new-secret-1") is not None
+    assert db.authenticate("rahul.sharma@example.com", "rahul-demo-123") is None

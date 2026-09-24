@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PayMind</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%234f46e5'/><text x='16' y='22' font-size='17' text-anchor='middle' fill='white' font-family='Arial' font-weight='700'>P</text></svg>">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<!-- ============ LOGIN ============ -->
+<section id="login-view" class="login-wrap" hidden>
+  <div class="login-card">
+    <div class="brand brand-lg"><span class="logo">P</span><span>PayMind</span></div>
+    <p class="muted">An AI assistant for your PayPal business account.</p>
+
+    <form id="login-form" autocomplete="on">
+      <label>Email<input id="login-email" type="email" required autocomplete="username"></label>
+      <label>Password<input id="login-password" type="password" required autocomplete="current-password"></label>
+      <p id="login-error" class="form-error" hidden></p>
+      <button class="btn btn-primary btn-block" type="submit" id="login-btn">Log in</button>
+    </form>
+
+    <div class="divider"><span>Demo accounts</span></div>
+    <div class="demo-accounts">
+      <button class="demo" data-email="asha@paymind-demo.example" data-password="asha-demo-123">
+        <span class="avatar">A</span><span><b>Asha Iyer</b><small>Accountant · sees everything</small></span>
+      </button>
+      <button class="demo" data-email="rahul.sharma@example.com" data-password="rahul-demo-123">
+        <span class="avatar">R</span><span><b>Rahul Sharma</b><small>Customer · user_123</small></span>
+      </button>
+      <button class="demo" data-email="priya.nair@example.com" data-password="priya-demo-123">
+        <span class="avatar">P</span><span><b>Priya Nair</b><small>Customer · user_456</small></span>
+      </button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ APP ============ -->
+<section id="app-view" class="app" hidden>
+  <aside class="sidebar">
+    <div class="brand"><span class="logo">P</span><span>PayMind</span></div>
+
+    <div class="user-card">
+      <span class="avatar" id="user-avatar">?</span>
+      <div>
+        <div class="user-name" id="user-name"></div>
+        <div class="user-meta"><span class="badge" id="user-role"></span><span id="user-payer" class="muted"></span></div>
+      </div>
+    </div>
+    <p class="token-note muted" id="token-note"></p>
+
+    <button class="btn btn-ghost btn-block" id="new-chat">＋ New chat</button>
+
+    <div class="side-section">
+      <h4>Try asking</h4>
+      <ul class="suggestions" id="suggestions"></ul>
+    </div>
+
+    <div class="side-section">
+      <h4>Status</h4>
+      <ul class="status" id="status">
+        <li data-key="paypal"><i></i>PayPal (mock)</li>
+        <li data-key="search"><i></i>Tool search</li>
+        <li data-key="llm"><i></i>Gemini</li>
+      </ul>
+    </div>
+
+    <button class="btn btn-ghost btn-block logout" id="logout">Log out</button>
+  </aside>
+
+  <main class="main">
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="chat">💬 Chat</button>
+      <button class="tab" data-tab="data">🏦 PayPal data</button>
+      <button class="tab" data-tab="audit">📜 Audit log</button>
+    </nav>
+
+    <!-- chat -->
+    <div class="panel active" id="panel-chat">
+      <div class="messages" id="messages">
+        <div class="empty" id="chat-empty">
+          <div class="logo logo-xl">P</div>
+          <h2>How can I help with the account today?</h2>
+          <p class="muted">I can look things up and take actions through PayPal. Anything that changes money or data asks you first.</p>
+        </div>
+      </div>
+      <form class="composer" id="composer">
+        <textarea id="input" rows="1" placeholder="Ask about invoices, payments, disputes…" maxlength="2000"></textarea>
+        <button class="btn btn-primary" id="send" type="submit">Send</button>
+      </form>
+    </div>
+
+    <!-- paypal data -->
+    <div class="panel" id="panel-data">
+      <div class="panel-head row">
+        <div>
+          <h2>PayPal data</h2>
+          <p class="muted" id="data-sub"></p>
+        </div>
+        <div class="actions">
+          <button class="btn btn-ghost" id="data-refresh">↻ Refresh</button>
+          <button class="btn btn-danger-ghost" id="data-reset" hidden>Reset demo data</button>
+        </div>
+      </div>
+      <div class="stats" id="stats"></div>
+      <div class="subtabs" id="data-subtabs"></div>
+      <div class="table-wrap"><table id="data-table"></table></div>
+    </div>
+
+    <!-- audit -->
+    <div class="panel" id="panel-audit">
+      <div class="panel-head row">
+        <div>
+          <h2>Audit log</h2>
+          <p class="muted">Every action the assistant tried for you. You only ever see your own history.</p>
+        </div>
+        <div class="actions"><button class="btn btn-ghost" id="audit-refresh">↻ Refresh</button></div>
+      </div>
+      <div class="table-wrap"><table id="audit-table"></table></div>
+    </div>
+  </main>
+</section>
+
+<div class="toast" id="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

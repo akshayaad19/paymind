@@ -61,18 +61,18 @@ PayPal staff are not users of the assistant. Both roles are answered from the **
 | Database | Holds | Status |
 |---|---|---|
 | `data/mock/paypal_mock.db` | The shop's PayPal account: customers (buyers), payments, refunds, invoices, disputes, orders, ledger | ✅ Step 4 |
-| `data/app.db` | Our app's own data: **users** (name, role, and for customers their `payer_id`), **audit log**, conversation state | ⏭️ Step 5 |
+| `data/app/app.db` | Our app's own data: **users** (name, role, password hash, and for customers their `payer_id`), **audit log**; conversation state in `data/app/checkpoints.db` | ✅ Step 5 |
 
 **Access control.** Nobody touches PayPal or the databases directly; every request goes through the agent:
 
 | Layer | What it does | Status |
 |---|---|---|
-| 1. Login | Identifies the user and their role (`users` table). A customer user is linked to their PayPal `payer_id` | ⏭️ Step 5 |
+| 1. Login | Email + password (scrypt hash) → JWT; the role is read from the `users` table on every request. A customer user is linked to their PayPal `payer_id` | ✅ Step 5e |
 | 2. Tool search role filter | A customer never even *sees* accountant tools such as refunds | ✅ Step 3 |
-| 3. Validator | Checks the role again before anything runs | ⏭️ Step 5 |
-| 4. Data scope | Customers can only fetch records with **their** `payer_id` (Rahul can't see another customer's invoice) | ⏭️ Step 5 |
+| 3. Validator | Checks the role again before anything runs | ✅ Step 5c |
+| 4. Data scope | Customers can only fetch records with **their** `payer_id` (Rahul can't see another customer's invoice) | ✅ Step 5d |
 | 5. Confirmation | Money-moving (write) actions need an explicit "yes" | ✅ cards (Step 2), enforced in Step 5 |
-| 6. Audit log | Every action recorded: who, what, when, result | ⏭️ Step 5 |
+| 6. Audit log | Every action recorded: who, what, when, result | ✅ Step 5a |
 
 The shop's PayPal API credentials stay on the server; users never see them, so the only way in is through the assistant and its checks.
 
@@ -461,7 +461,7 @@ Each record is one row holding PayPal-shaped JSON. You can open either file in a
 
 ### Step 5: The agent (in progress)
 
-Built in parts: **5a** app database ✅ · **5b** executor ✅ · **5c** validator ✅ · **5d** agent loop (LangGraph + Gemini) ✅ · 5e chat screen.
+Built in parts: **5a** app database ✅ · **5b** executor ✅ · **5c** validator ✅ · **5d** agent loop (LangGraph + Gemini) ✅ · **5e** web app, JWT auth, tracing ✅.
 
 #### 5a: App database ✅
 
@@ -615,6 +615,69 @@ The agent then sees each offered tool's *"Required: …"* and *"Example call: {�
 
 **Gemini free tier:** about 20 requests per model per day, and frequent 503 "high demand" errors. Each question takes 2–4 LLM calls, so replies can be slow or fail. Billing gives much higher limits.
 
+#### 5e: Web app, JWT auth and LangSmith tracing ✅
+
+`src/paymind/api/`: a FastAPI backend plus a web page (plain HTML/CSS/JS, light and dark mode). The page only decides what to show; **every permission is checked on the server**.
+
+```
+Browser                                    PayMind API (FastAPI, port 8001)
+  POST /api/auth/login  email + password ──► scrypt hash check → JWT (HS256, 8 h)
+  every request: Authorization: Bearer … ──► verify signature + expiry → load user → check role
+                                              ├── POST /api/chat, /api/chat/confirm → agent (5d)
+                                              ├── GET  /api/paypal/overview         → PayPal data, scoped by role
+                                              ├── POST /api/paypal/reset            → accountants only
+                                              ├── GET  /api/audit                   → caller's own log
+                                              └── GET  /api/health                  → PayPal / search / Gemini status
+```
+
+**Auth**
+
+| | How |
+|---|---|
+| Passwords | Stored only as salted **scrypt** hashes (`users.password_hash`). A wrong email and a wrong password look identical and take the same time |
+| Token | **JWT** signed with `JWT_SECRET` from `.env`: `sub` (user), `role`, `name`, `iat`, `exp` (8 h), `iss`. Kept in the tab's sessionStorage |
+| Every request | Signature and expiry verified; the **role is read from the database**, not trusted from the token |
+| Role checks | Enforced on the server: customers get only their own disputes/invoices and no balance or transactions; only accountants can reset demo data (403 otherwise) |
+| Chat privacy | Conversations are stored per user (`<user_id>__<session>`), so the same session id from two users is two separate chats |
+
+Tested: login, wrong password, no token, expired token, **forged token** (signed with another key), role-from-database, 403s, customer scoping, private chat threads.
+
+**Demo logins**
+
+| User | Email | Password | Role |
+|---|---|---|---|
+| Asha Iyer | asha@paymind-demo.example | asha-demo-123 | accountant |
+| Rahul Sharma | rahul.sharma@example.com | rahul-demo-123 | customer (user_123) |
+| Priya Nair | priya.nair@example.com | priya-demo-123 | customer (user_456) |
+
+**The page**
+- **Login**: email + password, or one click on a demo account.
+- **💬 Chat**: suggestions per role, a typing indicator, and **Yes / No buttons** when an action needs confirmation (large amounts are flagged). If Gemini is down, a clear "nothing was done, try again" message.
+- **🏦 PayPal data**: accountants see the balance, 30-day sales, open disputes, unpaid invoices, and tables of disputes, invoices and transactions; customers see only their own disputes and invoices.
+- **📜 Audit log**: the user's own actions.
+- **Sidebar**: who's logged in, their role, when the token expires, and status lights for PayPal, search and Gemini.
+
+Internal details (which tools search picked, the tools the agent called and their arguments) are **not shown in the app**. They belong in observability.
+
+**LangSmith tracing** (`LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT=paymind` in `.env`). Every chat is one trace, tagged with user, role and session:
+
+```
+paymind_chat                                   metadata: user_id, role, session_id
+ ├── search_tools → tool_search   input: query, role · output: top tools with score, type, allowed_roles
+ ├── agent → Gemini               tools offered, the call it chose, tokens, time
+ ├── gate → validate              ok / needs_confirmation / invalid / blocked + reasons
+ ├── tools → paypal_api           input: tool, params, caller {user_id, role}
+ │                                 output: status, attempts, allowed_roles, role_allowed
+ └── agent → Gemini               final answer
+```
+
+When an answer is wrong, the trace shows where: the right tool missing from `tool_search` (search problem), offered but not chosen (LLM problem), or an error in `paypal_api` (API or parameter problem). `role_allowed: false` on a PayPal call would mean a check was bypassed.
+
+```bash
+.venv/bin/uvicorn paymind.mock_paypal.app:create_app --factory --port 8000   # mock PayPal
+.venv/bin/uvicorn paymind.api.server:create_app --factory --port 8001        # PayMind → http://localhost:8001
+```
+
 ## Status
 
-Design complete; steps 1–4 done; step 5 (agent) in progress: 5a–5d done (app database, executor, validator, agent loop); 5e chat screen next, and a live re-test of the invoice flow once Gemini quota resets.
+Design complete; steps 1–4 done; step 5 (agent) in progress: 5a–5e done (app database, executor, validator, agent loop, web app with JWT auth and LangSmith tracing). Next: live re-test of write actions once Gemini quota resets, the RAG tool, the scaling evaluation, and the design document.

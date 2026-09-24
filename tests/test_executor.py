@@ -147,3 +147,17 @@ def test_client_errors_are_not_retried():
 def test_rate_limit_is_retried():
     result, _, _ = run([429, 200], tool="list_disputes", params={})
     assert result.ok and result.attempts == 2
+
+
+def test_result_records_caller_and_role_check(executor):
+    from paymind.app.database import User
+    asha = User("u_asha", "Asha", "a@x.com", "accountant", None)
+    rahul = User("u_rahul", "Rahul", "r@x.com", "customer", "user_123")
+    ok = executor.execute("list_disputes", {}, caller=rahul)
+    assert ok.caller == {"user_id": "u_rahul", "role": "customer"}
+    assert set(ok.allowed_roles) == {"customer", "accountant"} and ok.role_allowed is True
+    refund_card_roles = REGISTRY.get("list_transactions")["allowed_roles"]
+    r = executor.execute("list_transactions", {"start_date": "2026-08-01T00:00:00Z", "end_date": "2026-08-02T00:00:00Z"}, caller=rahul)
+    assert r.allowed_roles == refund_card_roles and r.role_allowed is ("customer" in refund_card_roles)
+    assert executor.execute("list_disputes", {}).role_allowed is None  # no caller given
+    assert executor.execute("list_disputes", {}, caller=asha).role_allowed is True

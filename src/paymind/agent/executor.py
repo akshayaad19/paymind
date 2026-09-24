@@ -29,6 +29,7 @@ from typing import Any, Callable
 from urllib.parse import quote
 
 import httpx
+from langsmith import traceable
 
 ROOT = Path(__file__).resolve().parents[3]
 RETRY_STATUSES = {429, 500, 502, 503, 504}
@@ -71,6 +72,9 @@ class ExecutionResult:
     attempts: int
     request_id: str | None           # PayPal-Request-Id sent (writes only)
     replayed: bool = False           # PayPal returned a remembered answer for this request id
+    caller: dict | None = None       # who asked: {"user_id", "role"} (for tracing and audits)
+    allowed_roles: list[str] = field(default_factory=list)  # roles the tool card allows
+    role_allowed: bool | None = None # caller's role is in allowed_roles (None when no caller)
 
 
 def build_request(card: dict, params: dict[str, Any]) -> HttpRequest:
@@ -134,11 +138,17 @@ class Executor:
         self.sleep = sleep
         self.access_token = access_token or os.getenv("PAYPAL_ACCESS_TOKEN") or "mock-token"
 
+    @traceable(name="paypal_api", run_type="tool")
     def execute(self, tool_name: str, params: dict[str, Any], request_id: str | None = None,
-                extra_headers: dict[str, str] | None = None) -> ExecutionResult:
+                extra_headers: dict[str, str] | None = None, caller: Any = None) -> ExecutionResult:
+        """caller: the user this call is made for (anything with user_id and role). It's recorded
+        in the trace with the tool's allowed roles, so access can be checked at a glance. The
+        permission check itself is done earlier, by the validator."""
         card = self.registry.get(tool_name)
         if card is None:
             raise KeyError(f"unknown tool: {tool_name}")
+        who = {"user_id": caller.user_id, "role": caller.role} if caller is not None else None
+        allowed = list(card.get("allowed_roles", []))
         req = build_request(card, params)
         is_write = card["action_type"] == "write"
         if is_write:
@@ -171,4 +181,5 @@ class Executor:
             ok=ok, tool=tool_name, method=req.method, path=req.path, status_code=status, body=body,
             error=None if ok else describe_error(status, body), attempts=attempts,
             request_id=request_id if is_write else None, replayed=replayed,
+            caller=who, allowed_roles=allowed, role_allowed=(who["role"] in allowed) if who else None,
         )

@@ -22,3 +22,6 @@ qdrant_data/
 .DS_Store
 .vscode/
 .idea/
+*.db-shm
+*.db-wal
+*.db-journal

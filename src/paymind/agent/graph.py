@@ -149,7 +149,9 @@ def build_graph(deps: Deps, checkpointer=None):
             if wait:
                 deps.sleep(wait)
             try:
-                return {"steps": steps, "messages": [llm.invoke(prompt)]}
+                reply = llm.invoke(prompt)
+                deps.llm_errors.clear()  # healthy again
+                return {"steps": steps, "messages": [reply]}
             except Exception as exc:  # every model failed (busy, out of quota, network)
                 deps.llm_errors.append(f"{type(exc).__name__}: {str(exc)[:200]}")
         return {"steps": steps, "messages": [AIMessage(LLM_DOWN)]}
@@ -217,7 +219,7 @@ def build_graph(deps: Deps, checkpointer=None):
                 content = "The user declined, so nothing was done. Tell them it was cancelled; don't retry."
                 deps.appdb.log_action(user, name, params, "declined", **audit)
             else:
-                result = deps.executor.execute(name, params, request_id=f"pm-{session_id}-{cid}")
+                result = deps.executor.execute(name, params, request_id=f"pm-{session_id}-{cid}", caller=user)
                 body = filter_results(user, name, result.body)
                 content = compact({"ok": result.ok, "status": result.status_code, "result": body}
                                   if result.ok else {"ok": False, "status": result.status_code, "error": result.error})
@@ -252,11 +254,15 @@ class Reply:
 
 class PayMindAgent:
     def __init__(self, deps: Deps, checkpointer):
+        self.deps = deps
         self.graph = build_graph(deps, checkpointer)
 
-    @staticmethod
-    def _config(user_id: str, session_id: str) -> dict:
-        return {"configurable": {"thread_id": session_id, "user_id": user_id}, "recursion_limit": 50}
+    def _config(self, user_id: str, session_id: str) -> dict:
+        user = self.deps.appdb.get_user(user_id)
+        role = user.role if user else "unknown"
+        return {"configurable": {"thread_id": session_id, "user_id": user_id}, "recursion_limit": 50,
+                "run_name": "paymind_chat", "tags": [f"role:{role}"],
+                "metadata": {"user_id": user_id, "role": role, "session_id": session_id}}
 
     def _reply(self, result: dict) -> Reply:
         pending = result.get("__interrupt__")

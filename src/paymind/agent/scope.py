@@ -43,14 +43,14 @@ def _owns(user: User, param: str, value: str, executor: Executor) -> bool | None
         "invoice_id": ("show_invoice_details", lambda r: _invoice_email(r) == user.email.lower()),
     }
     if param == "refund_id":
-        refund = executor.execute("show_refund_details", {"refund_id": value})
+        refund = executor.execute("show_refund_details", {"refund_id": value}, caller=user)
         if not refund.ok:
             return None
         return _owns(user, "capture_id", refund.body.get("capture_id", ""), executor)
     if param not in lookups:
         return None
     tool, check = lookups[param]
-    result = executor.execute(tool, {param: value})
+    result = executor.execute(tool, {param: value}, caller=user)
     return check(result.body) if result.ok else None
 
 

@@ -26,6 +26,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
 from jsonschema import Draft202012Validator
+from langsmith import traceable
 
 from ..app.database import User
 
@@ -169,6 +170,7 @@ def confirmation_text(card: dict, params: dict[str, Any], largest: Decimal) -> s
 
 # ---- all checks ---------------------------------------------------------------------------------
 
+@traceable(name="validate", run_type="chain")
 def validate(
     card: dict | None,
     tool_name: str,

@@ -23,11 +23,20 @@ CHECKPOINTS = ROOT / "data/app/checkpoints.db"
 def qdrant_search(registry: ToolRegistry):
     from ..retrieval.tool_index import get_client, search_tools
 
+    from langsmith import traceable
+
     client = get_client()
 
+    @traceable(name="tool_search", run_type="chain")
+    def traced_search(query: str, role: str | None, k: int, include_eval_only: bool) -> list[dict]:
+        """What the trace shows: each tool with its score and who may use it."""
+        return [{"rank": i, "tool": h.name, "score": round(h.score, 3), "type": h.action_type,
+                 "allowed_roles": (registry.get(h.name) or {}).get("allowed_roles", []),
+                 "description": (registry.get(h.name) or {}).get("description", "")}
+                for i, h in enumerate(search_tools(client, query, role=role, k=k, include_eval_only=include_eval_only), 1)]
+
     def search(query: str, role: str | None = None, k: int = 5, include_eval_only: bool = True):
-        hits = search_tools(client, query, role=role, k=k, include_eval_only=include_eval_only)
-        return [(h.name, (registry.get(h.name) or {}).get("description", "")) for h in hits]
+        return [(h["tool"], h["description"]) for h in traced_search(query, role, k, include_eval_only)]
 
     return search
 

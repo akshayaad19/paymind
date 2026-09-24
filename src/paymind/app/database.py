@@ -7,7 +7,8 @@ the app's job.
 Tables:
   users      one row per person who can log in. role = accountant | customer.
              A customer is linked to their PayPal payer_id, so they only ever
-             see their own records.
+             see their own records. Passwords are stored only as salted
+             scrypt hashes, never in plain text.
   audit_log  one row per tool call the agent tries: who, which tool, the
              parameters, the outcome. System Search reads it to answer
              "what's the status of my last request?".
@@ -19,7 +20,10 @@ Files (same pattern as the mock):
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import secrets
 import shutil
 import sqlite3
 from dataclasses import dataclass
@@ -41,6 +45,7 @@ CREATE TABLE IF NOT EXISTS users (
     email       TEXT NOT NULL UNIQUE,
     role        TEXT NOT NULL CHECK (role IN ('customer', 'accountant')),
     payer_id    TEXT,                       -- PayPal payer_id; required for customers
+    password_hash TEXT,                     -- scrypt$salt$hash; NULL = can't log in
     created_at  TEXT NOT NULL,
     CHECK (role = 'accountant' OR payer_id IS NOT NULL)
 );
@@ -63,6 +68,28 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS audit_user_time ON audit_log (user_id, time DESC);
 """
+
+
+SCRYPT = {"n": 2**14, "r": 8, "p": 1, "dklen": 32}
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, **SCRYPT)
+    return f"scrypt${salt.hex()}${digest.hex()}"
+
+
+def verify_password(password: str, stored: str | None) -> bool:
+    if not stored or not stored.startswith("scrypt$"):
+        return False
+    _, salt_hex, digest_hex = stored.split("$")
+    digest = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt_hex), **SCRYPT)
+    return hmac.compare_digest(digest.hex(), digest_hex)
+
+
+# Used when the email doesn't exist, so a wrong email takes as long as a wrong password
+# (timing doesn't reveal which emails have accounts).
+_DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
 
 
 def now_iso() -> str:
@@ -98,17 +125,33 @@ class AppDatabase:
 
     # ---- users -------------------------------------------------------------
 
-    def add_user(self, user_id: str, name: str, email: str, role: str, payer_id: str | None = None) -> User:
+    def add_user(self, user_id: str, name: str, email: str, role: str, payer_id: str | None = None,
+                 password: str | None = None) -> User:
         if role not in ROLES:
             raise ValueError(f"role must be one of {ROLES}")
         if role == "customer" and not payer_id:
             raise ValueError("a customer must be linked to a PayPal payer_id")
         with self.conn:
             self.conn.execute(
-                "INSERT INTO users (user_id, name, email, role, payer_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (user_id, name, email, role, payer_id, now_iso()),
+                "INSERT INTO users (user_id, name, email, role, payer_id, password_hash, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, name, email.lower(), role, payer_id, hash_password(password) if password else None, now_iso()),
             )
-        return User(user_id, name, email, role, payer_id)
+        return User(user_id, name, email.lower(), role, payer_id)
+
+    def set_password(self, user_id: str, password: str) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE users SET password_hash = ? WHERE user_id = ?", (hash_password(password), user_id))
+
+    def authenticate(self, email: str, password: str) -> User | None:
+        """The user if email + password match, else None. Same work either way (no timing hint)."""
+        row = self.conn.execute(
+            "SELECT user_id, name, email, role, payer_id, password_hash FROM users WHERE email = ?", (email.strip().lower(),)
+        ).fetchone()
+        stored = row["password_hash"] if row else _DUMMY_HASH
+        ok = verify_password(password, stored)
+        if not row or not ok:
+            return None
+        return User(row["user_id"], row["name"], row["email"], row["role"], row["payer_id"])
 
     def get_user(self, user_id: str) -> User | None:
         row = self.conn.execute("SELECT user_id, name, email, role, payer_id FROM users WHERE user_id = ?", (user_id,)).fetchone()
