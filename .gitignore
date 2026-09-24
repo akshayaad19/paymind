@@ -15,6 +15,7 @@ venv/
 qdrant_data/
 *.sqlite
 *.db
+!data/mock/initial.db
 
 # OS / editor
 .DS_Store

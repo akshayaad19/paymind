@@ -38,6 +38,44 @@ python3 -m venv .venv
 .venv/bin/pytest
 ```
 
+## Who uses it and how access is controlled
+
+PayMind is an AI assistant for **one shop's PayPal business account** (the mock shop is *PayMind Demo Store*). It is not a store and not a payment app.
+
+```
+Accountant (shop staff) / Customer (buyer)
+        │  chat in plain English
+        ▼
+PayMind agent  ──calls PayPal APIs──►  the shop's PayPal account  (mock server + SQLite)
+```
+
+| Person | Works for | Can see | Can do |
+|---|---|---|---|
+| **Accountant** | The shop (its finance team) | Everything in the shop's account | Invoices, refunds, orders, disputes, reports |
+| **Customer** | Nobody; buys from the shop | **Only their own** records | View their invoices/payments/refunds, manage their own disputes and subscriptions |
+
+PayPal staff are not users of the assistant. Both roles are answered from the **same** PayPal data; what differs is how much each person may see and do.
+
+**Two databases, two worlds**
+
+| Database | Holds | Status |
+|---|---|---|
+| `data/mock/paypal_mock.db` | The shop's PayPal account: customers (buyers), payments, refunds, invoices, disputes, orders, ledger | ✅ Step 4 |
+| `data/app.db` | Our app's own data: **users** (name, role, and for customers their `payer_id`), **audit log**, conversation state | ⏭️ Step 5 |
+
+**Access control.** Nobody touches PayPal or the databases directly; every request goes through the agent:
+
+| Layer | What it does | Status |
+|---|---|---|
+| 1. Login | Identifies the user and their role (`users` table). A customer user is linked to their PayPal `payer_id` | ⏭️ Step 5 |
+| 2. Tool search role filter | A customer never even *sees* accountant tools such as refunds | ✅ Step 3 |
+| 3. Validator | Checks the role again before anything runs | ⏭️ Step 5 |
+| 4. Data scope | Customers can only fetch records with **their** `payer_id` (Rahul can't see another customer's invoice) | ⏭️ Step 5 |
+| 5. Confirmation | Money-moving (write) actions need an explicit "yes" | ✅ cards (Step 2), enforced in Step 5 |
+| 6. Audit log | Every action recorded: who, what, when, result | ⏭️ Step 5 |
+
+The shop's PayPal API credentials stay on the server; users never see them, so the only way in is through the assistant and its checks.
+
 ## Pipeline steps
 
 ### Step 1: Postman parser ✅
@@ -342,8 +380,85 @@ POST collections/tools/points/scroll
 
 Indexing 112 tools: ~4 s local, ~10–13 s to Qdrant Cloud.
 
-### Step 4: Mock PayPal server ⏭️
+### Step 4: Mock PayPal server ✅
+
+`src/paymind/mock_paypal/` is a small FastAPI server that **pretends to be PayPal**: same URLs, same JSON shapes, fake data we control.
+
+**Why we need it.** `tools.json` is only a *description* of PayPal's API (the menu). When the agent calls `GET /v1/customer/disputes`, some server has to receive the request and answer (the kitchen). Real PayPal needs an account and keys, its sandbox starts empty (no dispute from user_123, no sales last month), and it can't fail on demand. The mock fixes all of that. Switching to real PayPal later means changing only the base URL.
+
+```
+Agent ── GET /v1/customer/disputes?dispute_state=REQUIRED_ACTION ──► mock server (FastAPI, port 8000)
+      ◄── { "items": [ { dispute PP-D-88561 from user_123, $40 } ] } ──
+```
+
+**Two kinds of endpoint**
+
+| Kind | Count | How it answers |
+|---|---|---|
+| **Stateful** | 27 | Real logic on the SQLite data: a refund changes the payment's status, creates a refund record and lowers the balance; a sent invoice can't be sent again |
+| **Example replay** | 83 | Returns PayPal's own example response from `example_responses.json` (header `X-Mock-Source: example:<tool>`) |
+
+All 112 tools are answered (two tools share a URL with another tool). Every stateful handler uses the exact path from its tool card.
+
+Stateful areas: invoices (create, show, list, send, remind, cancel, delete, record payment, search, next number) · captures and refunds · orders (create, show, capture) · disputes (list, show, accept claim, make/accept/deny offer, message, evidence, escalate) · transactions and balance.
+
+#### The data: SQLite is the source of truth
+
+There is no generated or in-memory data. **All data lives in SQLite**, and every request reads and writes it directly.
+
+```
+data/mock/initial.db       starting data (committed to git, never changed by the server)
+        │  copied on first start
+        ▼
+data/mock/paypal_mock.db   working database the server reads and writes (git-ignored)
+        ▲
+        └── POST /mock/reset copies initial.db over it again
+```
+
+| Table | Rows in `initial.db` | What |
+|---|---|---|
+| `customers` | 6 | including **user_123** (Rahul Sharma) and **john@x.com** |
+| `captures` | 47 | payments from mid-July to 23 Sep 2026 |
+| `refunds` | 2 | one partial, one full |
+| `invoices` | 8 | 2 draft, 3 sent (one overdue), 2 paid, 1 cancelled |
+| `disputes` | 4 | **user_123, $40, waiting for our response**; one under PayPal review; one waiting for the buyer to answer our offer; one resolved |
+| `orders` | 2 | one created, one completed |
+| `transactions` | 49 | the ledger behind transaction search and the balance |
+| `meta` | | merchant details, starting balance, next invoice number |
+| `idempotency` | | remembered answers for `PayPal-Request-Id` retries |
+
+Each record is one row holding PayPal-shaped JSON. You can open either file in any SQLite viewer (e.g. the *SQLite Viewer* VS Code extension, or `sqlite3 data/mock/paypal_mock.db`), and edits made there are seen by the running server on the next request.
+
+- **Changes survive restarts.** Refund a payment, restart the server: it's still refunded and the balance is still lower.
+- **One transaction per request.** A refund updates the payment, adds the refund and adds the ledger row all together or not at all. A failed request (400/404/422) writes nothing.
+- **New records use the real current time** and random PayPal-style IDs checked for uniqueness.
+- **To change the starting data**, edit `initial.db` and run `POST /mock/reset`.
+- The starting data covers July–September 2026. Questions like "sales last month" are answered from those dates.
+
+**Realistic rules and errors** (PayPal's error format: `name`, `message`, `details[].issue`)
+
+| Situation | Response |
+|---|---|
+| Unknown ID | 404 `INVALID_RESOURCE_ID` |
+| Refund more than what's left | 422 `REFUND_AMOUNT_EXCEEDED` |
+| Refund an already fully refunded payment | 422 `CAPTURE_FULLY_REFUNDED` |
+| Send an invoice that isn't a draft / has no recipient | 422 `CANNOT_SEND_INVOICE` / `MISSING_RECIPIENT` |
+| Act on a resolved dispute | 422 `DISPUTE_ALREADY_RESOLVED` |
+| Transaction search over more than 31 days (PayPal's real limit) | 400 `INVALID_REQUEST` |
+
+**Built-in support for testing error handling**
+- **Idempotency:** a write sent again with the same `PayPal-Request-Id` header returns the first result (header `X-Mock-Idempotent-Replay: true`) instead of running twice. No double refunds.
+- **Failures on demand:** header `X-Mock-Fail: 500` or `503` fails without doing anything; `X-Mock-Fail: timeout` does the work and then answers late (the "it worked but the client timed out" case that idempotency protects against). `MOCK_FAILURE_RATE=0.2` makes 20% of calls fail with 503.
+
+**Deliberate difference from PayPal:** the dispute list includes each dispute's buyer, so "is there a dispute from user_123?" can be answered from one call (real PayPal needs a details call per dispute).
+
+```bash
+.venv/bin/uvicorn paymind.mock_paypal.app:create_app --factory --port 8000
+# interactive API docs: http://localhost:8000/docs
+# overview of the data:  http://localhost:8000/mock/summary
+# back to the starting data: curl -X POST http://localhost:8000/mock/reset
+```
 
 ## Status
 
-Design complete; steps 1–3 (parser, enricher, tool index) done.
+Design complete; steps 1–4 (parser, enricher, tool index, mock PayPal server) done. Next: step 5, the agent.
