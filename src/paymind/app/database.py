@@ -12,6 +12,8 @@ Tables:
   audit_log  one row per tool call the agent tries: who, which tool, the
              parameters, the outcome. System Search reads it to answer
              "what's the status of my last request?".
+  dispute_reads  how many messages of each dispute's thread each user has
+             seen, so the page can flag new messages from the other side.
 
 Files (same pattern as the mock):
   data/app/initial.db  starting data: demo users (committed)
@@ -67,6 +69,14 @@ CREATE TABLE IF NOT EXISTS audit_log (
     request_id      TEXT                    -- PayPal-Request-Id used for the call
 );
 CREATE INDEX IF NOT EXISTS audit_user_time ON audit_log (user_id, time DESC);
+
+CREATE TABLE IF NOT EXISTS dispute_reads (   -- how much of each dispute's thread each user has seen
+    user_id     TEXT NOT NULL REFERENCES users(user_id),
+    dispute_id  TEXT NOT NULL,
+    last_read   TEXT NOT NULL,
+    seen_count  INTEGER NOT NULL DEFAULT 0,  -- messages seen; threads only grow, so the rest are new
+    PRIMARY KEY (user_id, dispute_id)
+);
 """
 
 
@@ -119,6 +129,9 @@ class AppDatabase:
         self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        columns = {r[1] for r in self.conn.execute("PRAGMA table_info(dispute_reads)")}
+        if "seen_count" not in columns:  # databases created before this column existed
+            self.conn.execute("ALTER TABLE dispute_reads ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0")
 
     def close(self) -> None:
         self.conn.close()
@@ -160,6 +173,18 @@ class AppDatabase:
     def list_users(self) -> list[User]:
         rows = self.conn.execute("SELECT user_id, name, email, role, payer_id FROM users ORDER BY role, name")
         return [User(**dict(r)) for r in rows]
+
+    # ---- dispute message read markers -----------------------------------------
+
+    def mark_dispute_read(self, user_id: str, dispute_id: str, seen_count: int) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO dispute_reads (user_id, dispute_id, last_read, seen_count) VALUES (?, ?, ?, ?)",
+                (user_id, dispute_id, now_iso(), seen_count))
+
+    def dispute_reads(self, user_id: str) -> dict[str, int]:
+        """dispute_id -> number of messages this user has seen."""
+        return dict(self.conn.execute("SELECT dispute_id, seen_count FROM dispute_reads WHERE user_id = ?", (user_id,)).fetchall())
 
     # ---- audit log ---------------------------------------------------------------
 

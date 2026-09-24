@@ -87,6 +87,7 @@ async function login(email, password) {
 
 function logout(message) {
   state.token = null; state.user = null; state.sessionId = null; state.data = null;
+  $("#drawer").hidden = $("#drawer-backdrop").hidden = true;
   $("#app-view").hidden = true;
   $("#login-view").hidden = false;
   if (message) { $("#login-error").textContent = message; $("#login-error").hidden = false; }
@@ -98,10 +99,12 @@ const SUGGESTIONS = {
     "Which invoices are unpaid?",
     "How were sales this month?",
     "Create an invoice",
+    "Any new messages?",
   ],
   customer: [
     "Show my disputes",
     "Do I have unpaid invoices?",
+    "Any reply from the shop?",
   ],
 };
 
@@ -113,10 +116,10 @@ function showApp() {
   $("#user-name").textContent = u.name;
   $("#user-role").textContent = u.role;
   $("#user-role").className = `badge ${u.role}`;
-  $("#user-payer").textContent = u.payer_id ? `· ${u.payer_id}` : "";
   $("#suggestions").innerHTML = SUGGESTIONS[u.role].map((s) => `<li>${esc(s)}</li>`).join("");
   newChat();
   switchTab("chat");
+  loadWhatsNew();
 }
 
 // ---------------------------------------------------------------- tabs
@@ -209,6 +212,42 @@ function autosize() {
 
 // ---------------------------------------------------------------- PayPal data
 
+// Dispute status and reason in plain words, from the viewer's side (shop or customer).
+const DISPUTE_REASONS = {
+  MERCHANDISE_OR_SERVICE_NOT_RECEIVED: "Item not received",
+  MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED: "Item not as described",
+  UNAUTHORISED: "Payment not authorised",
+  CREDIT_NOT_PROCESSED: "Refund not received",
+  DUPLICATE_TRANSACTION: "Charged twice",
+  INCORRECT_AMOUNT: "Wrong amount charged",
+};
+function disputeReason(d) { return DISPUTE_REASONS[d.reason] || String(d.reason || "").replaceAll("_", " ").toLowerCase(); }
+function disputeStatus(d) {
+  const shop = state.user.role === "accountant";
+  switch (d.status) {
+    case "WAITING_FOR_SELLER_RESPONSE": return shop ? { text: "Needs your response", kind: "error" } : { text: "Waiting for the shop", kind: "waiting" };
+    case "WAITING_FOR_BUYER_RESPONSE": return shop ? { text: "Waiting for the customer", kind: "waiting" } : { text: "Needs your response", kind: "error" };
+    case "UNDER_REVIEW": return { text: "PayPal is reviewing", kind: "waiting" };
+    case "RESOLVED": return { text: "Resolved", kind: "ok" };
+    default: return { text: String(d.status || "").replaceAll("_", " ").toLowerCase(), kind: "neutral" };
+  }
+}
+
+// PayPal's invoice statuses in plain words. SENT means "sent and waiting for payment".
+function invoiceStatus(inv) {
+  const due = inv.detail?.payment_term?.due_date;
+  const today = new Date().toISOString().slice(0, 10);
+  switch (inv.status) {
+    case "DRAFT": return { text: "Draft", kind: "neutral" };
+    case "SENT": case "UNPAID": case "SCHEDULED":
+      return due && due < today ? { text: "Overdue", kind: "error" } : { text: "Awaiting payment", kind: "waiting" };
+    case "PARTIALLY_PAID": return { text: "Partly paid", kind: "waiting" };
+    case "PAID": case "MARKED_AS_PAID": return { text: "Paid", kind: "ok" };
+    case "CANCELLED": return { text: "Cancelled", kind: "neutral" };
+    default: return { text: String(inv.status || "").replaceAll("_", " ").toLowerCase(), kind: "neutral" };
+  }
+}
+
 function buyerOf(d) { return d.disputed_transactions?.[0]?.buyer || {}; }
 function recipientOf(inv) { const b = inv.primary_recipients?.[0]?.billing_info || {}; return b.email_address || "—"; }
 
@@ -216,16 +255,20 @@ const DATA_VIEWS = {
   disputes: {
     label: "Disputes",
     head: ["Dispute", "Buyer", "Reason", "Status", "Amount", "Opened"],
-    row: (d) => [`<code>${esc(d.dispute_id)}</code>`, `${esc(buyerOf(d).name || "")}<div class="desc">${esc(buyerOf(d).payer_id || "")}</div>`,
-      esc((d.reason || "").replaceAll("_", " ").toLowerCase()), badge(d.status, d.status === "RESOLVED" ? "ok" : "waiting"),
-      `<span class="num">${money(d.dispute_amount)}</span>`, shortDate(d.create_time)],
+    rowAttrs: (d) => `class="clickable" data-dispute="${esc(d.dispute_id)}"`,
+    row: (d) => { const s = disputeStatus(d);
+      return [`<code>${esc(d.dispute_id)}</code>${d.unread ? `<span class="new-badge">${d.unread} new</span>` : ""}`,
+      `${esc(buyerOf(d).name || "")}${state.user.role === "accountant" ? `<div class="desc">${esc(buyerOf(d).payer_id || "")}</div>` : ""}`,
+      esc(disputeReason(d)), `<span class="badge ${s.kind}">${esc(s.text)}</span>`,
+      `<span class="num">${money(d.dispute_amount)}</span>`, shortDate(d.create_time)]; },
   },
   invoices: {
     label: "Invoices",
-    head: ["Invoice", "Recipient", "Status", "Amount", "Due", "Date"],
-    row: (i) => [`<b>${esc(i.detail?.invoice_number)}</b><div class="desc mono">${esc(i.id)}</div>`, esc(recipientOf(i)),
-      badge(i.status, ["PAID", "MARKED_AS_PAID"].includes(i.status) ? "ok" : i.status === "CANCELLED" ? "neutral" : "waiting"),
-      money(i.amount), money(i.due_amount), esc(i.detail?.invoice_date)],
+    head: ["Invoice", "Recipient", "Status", "Amount", "Amount due", "Due date", "Issued"],
+    row: (i) => { const s = invoiceStatus(i);
+      return [`<b>${esc(i.detail?.invoice_number)}</b><div class="desc mono">${esc(i.id)}</div>`, esc(recipientOf(i)),
+        `<span class="badge ${s.kind}">${esc(s.text)}</span>`, money(i.amount), money(i.due_amount),
+        esc(i.detail?.payment_term?.due_date || "—"), esc(i.detail?.invoice_date)]; },
   },
   transactions: {
     label: "Transactions",
@@ -326,7 +369,7 @@ async function loadTransactions() {
 
 function renderRows(view, rows, emptyText = "Nothing here.") {
   $("#data-table").innerHTML = `<tr>${view.head.map((h) => `<th>${h}</th>`).join("")}</tr>` +
-    (rows.map((r) => `<tr>${view.row(r).map((c) => `<td>${c}</td>`).join("")}</tr>`).join("") ||
+    (rows.map((r) => `<tr ${view.rowAttrs ? view.rowAttrs(r) : ""}>${view.row(r).map((c) => `<td>${c}</td>`).join("")}</tr>`).join("") ||
       `<tr><td class="empty-row" colspan="${view.head.length}">${emptyText}</td></tr>`);
 }
 
@@ -337,6 +380,98 @@ function renderDataTable() {
   if (isTx) return loadTransactions();
   const view = DATA_VIEWS[state.dataTab], rows = state.data[state.dataTab];
   renderRows(view, rows);
+}
+
+// ---------------------------------------------------------------- what's new (top of chat, no AI needed)
+
+function timeAgo(iso) {
+  const mins = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 60) return mins <= 1 ? "just now" : `${mins} minutes ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours} hour${hours > 1 ? "s" : ""} ago`;
+  const days = Math.round(hours / 24);
+  return days === 1 ? "yesterday" : `${days} days ago`;
+}
+
+function whatsNewItem(i) {
+  const about = `${esc(DISPUTE_REASONS[i.reason] || "Dispute")} · ${money(i.amount)}`;
+  const quote = i.text ? `<div class="quote">“${esc(i.text.length > 140 ? i.text.slice(0, 140) + "…" : i.text)}”</div>` : "";
+  const due = !i.action_needed ? "" : i.days_left === null ? " · action needed"
+    : i.days_left < 0 ? ` · <span class="amount-neg">overdue by ${-i.days_left} day${i.days_left === -1 ? "" : "s"}</span>`
+    : ` · respond by ${esc(new Date(i.due_date).toLocaleDateString(undefined, { day: "numeric", month: "short" }))} (${i.days_left === 0 ? "today" : `${i.days_left} day${i.days_left === 1 ? "" : "s"} left`})`;
+  const texts = {
+    action_needed: [`🔴 Action needed · ${esc(i.with)}${due}`, "Open", "open"],
+    new_message: [`📬 New message from ${esc(i.with)} · ${timeAgo(i.time)}${due}`, "Open", "open"],
+    needs_reply: [`✍️ ${esc(i.with)} wrote ${timeAgo(i.time)} · waiting for your reply${due}`, "Reply", "open"],
+    no_reply_yet: [`⏳ You wrote ${timeAgo(i.time)} · no reply yet from ${esc(i.with)}`, "Send a reminder", "remind"],
+  };
+  const [what, label, action] = texts[i.kind];
+  return `<div class="wn-item"><div><div class="what">${what}</div><div class="quote">${about}</div>${quote}</div>
+    <button class="btn ${action === "remind" ? "btn-primary" : "btn-ghost"}" data-wn="${action}" data-dispute="${esc(i.dispute_id)}"
+      data-days="${i.days || ""}">${label}</button></div>`;
+}
+
+async function loadWhatsNew() {
+  let res;
+  try { res = await api("/api/whats-new"); } catch { return; }
+  if (!res.items.length || state.sessionId) return;  // nothing to show, or the chat already started
+  $("#chat-empty")?.remove();
+  const card = document.createElement("div");
+  card.className = "whats-new";
+  card.id = "whats-new";
+  card.innerHTML = `<h3>What's new</h3>${res.items.map(whatsNewItem).join("")}`;
+  $("#messages").prepend(card);
+  card.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-wn]");
+    if (!b) return;
+    if (b.dataset.wn === "open") return openDispute(b.dataset.dispute);
+    const days = b.dataset.days ? ` I wrote ${b.dataset.days} days ago and haven't heard back.` : "";
+    send(`Send a polite reminder on dispute ${b.dataset.dispute}.${days}`);
+  });
+}
+
+// ---------------------------------------------------------------- dispute conversation
+
+let openDisputeId = null;
+
+function renderThread(res) {
+  const d = res.dispute, s = disputeStatus(d), mine = state.user.role === "accountant" ? "SELLER" : "BUYER";
+  $("#drawer-title").textContent = `${disputeReason(d)} · ${money(d.dispute_amount)}`;
+  $("#drawer-sub").innerHTML = `<span class="mono">${esc(d.dispute_id)}</span><span class="badge ${s.kind}">${esc(s.text)}</span>` +
+    (state.user.role === "accountant" ? `<span>with ${esc(buyerOf(d).name || "customer")}</span>` : "");
+  $("#thread").innerHTML = res.messages.map((m) => `
+    <div class="tmsg ${m.from === mine ? "mine" : ""}">
+      <div class="who">${esc(m.from === mine ? "You" : m.name)} · ${shortDate(m.time)}</div>
+      <div class="text">${esc(m.text)}</div>
+    </div>`).join("") || `<p class="muted">No messages yet.</p>`;
+  $("#thread").scrollTop = $("#thread").scrollHeight;
+  $("#thread-form").hidden = !res.can_reply;
+  $("#thread-closed").hidden = res.can_reply;
+}
+
+async function openDispute(id) {
+  openDisputeId = id;
+  $("#drawer").hidden = $("#drawer-backdrop").hidden = false;
+  $("#thread").innerHTML = `<p class="muted">Loading…</p>`;
+  try { renderThread(await api(`/api/disputes/${encodeURIComponent(id)}`)); $("#thread-input").focus(); }
+  catch (err) { if (err.message !== "unauthorized") $("#thread").innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
+}
+
+function closeDispute() {
+  $("#drawer").hidden = $("#drawer-backdrop").hidden = true;
+  openDisputeId = null;
+  loadData();  // refresh the "new" badges
+}
+
+async function sendThreadMessage() {
+  const text = $("#thread-input").value.trim();
+  if (!text || !openDisputeId) return;
+  $("#thread-send").disabled = true;
+  try {
+    renderThread(await api(`/api/disputes/${encodeURIComponent(openDisputeId)}/messages`, { method: "POST", body: JSON.stringify({ message: text }) }));
+    $("#thread-input").value = "";
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+  finally { $("#thread-send").disabled = false; }
 }
 
 // ---------------------------------------------------------------- audit
@@ -367,7 +502,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#login-form").addEventListener("submit", (e) => { e.preventDefault(); login($("#login-email").value, $("#login-password").value); });
   $("#logout").addEventListener("click", () => logout());
-  $("#new-chat").addEventListener("click", () => { newChat(); switchTab("chat"); });
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
   $("#suggestions").addEventListener("click", (e) => { if (e.target.tagName === "LI") { switchTab("chat"); send(e.target.textContent); } });
 
@@ -383,10 +517,15 @@ document.addEventListener("DOMContentLoaded", () => {
     renderDataTable();
   });
   $("#audit-refresh").addEventListener("click", loadAudit);
+  $("#data-table").addEventListener("click", (e) => { const row = e.target.closest("tr[data-dispute]"); if (row) openDispute(row.dataset.dispute); });
+  $("#drawer-close").addEventListener("click", closeDispute);
+  $("#drawer-backdrop").addEventListener("click", closeDispute);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#drawer").hidden) closeDispute(); });
+  $("#thread-form").addEventListener("submit", (e) => { e.preventDefault(); sendThreadMessage(); });
+  $("#thread-input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendThreadMessage(); } });
   $$("#tx-period button").forEach((b) => b.addEventListener("click", () => { state.txPeriod = b.dataset.period; state.txAnchor = new Date(); loadTransactions(); }));
   $("#tx-prev").addEventListener("click", () => shiftPeriod(-1));
   $("#tx-next").addEventListener("click", () => shiftPeriod(1));
-  $("#tx-today").addEventListener("click", () => { state.txAnchor = new Date(); loadTransactions(); });
 
   $("#login-view").hidden = false;  // always start at login
 });

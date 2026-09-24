@@ -154,6 +154,9 @@ def check_grounding(card: dict, params: dict[str, Any], seen_text: str) -> list[
 
 # ---- 5. confirmation ---------------------------------------------------------------------------
 
+TEXT_FIELDS = ("message", "note", "note_to_payer", "subject")  # words the user should see before they're sent
+
+
 def confirmation_text(card: dict, params: dict[str, Any], largest: Decimal) -> str:
     details = ", ".join(f"{k}={v}" for k, v in id_params(card, params).items())
     amounts = ", ".join(f"{m['value']} {m['currency_code']}" for _, m in money_values(params))
@@ -163,6 +166,9 @@ def confirmation_text(card: dict, params: dict[str, Any], largest: Decimal) -> s
     if details:
         parts.append(f"({details})")
     text = " ".join(parts) + "?"
+    words = [str(params[f]) for f in TEXT_FIELDS if isinstance(params.get(f), str) and params[f].strip()]
+    if words:  # show exactly what will be sent, so the user approves the wording too
+        text += "\n\n" + "\n".join(f"“{w[:600]}{'…' if len(w) > 600 else ''}”" for w in words)
     if largest > LARGE_AMOUNT:
         text = f"⚠️ Large amount. {text}"
     return text

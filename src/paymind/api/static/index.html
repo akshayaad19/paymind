@@ -34,11 +34,9 @@
       <span class="avatar" id="user-avatar">?</span>
       <div>
         <div class="user-name" id="user-name"></div>
-        <div class="user-meta"><span class="badge" id="user-role"></span><span id="user-payer" class="muted"></span></div>
+        <div class="user-meta"><span class="badge" id="user-role"></span></div>
       </div>
     </div>
-
-    <button class="btn btn-ghost btn-block" id="new-chat">＋ New chat</button>
 
     <div class="side-section">
       <h4>Try asking</h4>
@@ -94,7 +92,6 @@
           <button class="btn btn-ghost btn-icon" id="tx-prev" aria-label="Previous period">◀</button>
           <span class="tx-label" id="tx-label"></span>
           <button class="btn btn-ghost btn-icon" id="tx-next" aria-label="Next period">▶</button>
-          <button class="btn btn-ghost" id="tx-today">Today</button>
         </div>
       </div>
       <div class="tx-totals" id="tx-totals" hidden></div>
@@ -114,6 +111,24 @@
     </div>
   </main>
 </section>
+
+<!-- dispute conversation -->
+<div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="Dispute conversation">
+  <header class="drawer-head">
+    <div>
+      <div class="drawer-title" id="drawer-title"></div>
+      <div class="drawer-sub" id="drawer-sub"></div>
+    </div>
+    <button class="btn btn-ghost btn-icon" id="drawer-close" aria-label="Close">✕</button>
+  </header>
+  <div class="thread" id="thread"></div>
+  <form class="drawer-composer" id="thread-form">
+    <textarea id="thread-input" rows="2" maxlength="2000" placeholder="Write a message…"></textarea>
+    <button class="btn btn-primary" type="submit" id="thread-send">Send</button>
+  </form>
+  <p class="drawer-closed muted small" id="thread-closed" hidden>This dispute is resolved, so messaging is closed.</p>
+</aside>
 
 <div class="toast" id="toast" hidden></div>
 <script src="/static/app.js"></script>

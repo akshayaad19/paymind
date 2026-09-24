@@ -227,3 +227,66 @@ def test_transactions_rules(setup):
     assert tx(client, asha, "2026-09-10T00:00:00+05:30", "2026-09-01T00:00:00+05:30").status_code == 400  # end before start
     assert tx(client, asha, "2026-09-01T00:00:00", "2026-09-02T00:00:00").status_code == 400             # no time zone
     assert tx(client, login(client, "rahul"), "2026-09-01T00:00:00+05:30", "2026-09-02T00:00:00+05:30").status_code == 403
+
+
+# ---- dispute conversations ----------------------------------------------------------------------------
+
+def dispute_of(services, payer_id):
+    rows = services.executor.execute("list_disputes", {}).body["items"]
+    return next(d["dispute_id"] for d in rows if d["disputed_transactions"][0]["buyer"]["payer_id"] == payer_id)
+
+
+def test_customer_and_shop_message_each_other(setup):
+    client, _, services = setup
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    dispute = dispute_of(services, "user_123")
+
+    thread = client.get(f"/api/disputes/{dispute}", headers=rahul).json()
+    assert thread["can_reply"] and thread["messages"][0]["from"] == "BUYER"   # his opening claim
+
+    sent = client.post(f"/api/disputes/{dispute}/messages", json={"message": "Any update on my order?"}, headers=rahul).json()
+    assert sent["messages"][-1] == {**sent["messages"][-1], "from": "BUYER", "text": "Any update on my order?"}
+
+    # Asha sees one new message from the customer, then it's cleared once she opens the thread
+    unread = {d["dispute_id"]: d["unread"] for d in client.get("/api/paypal/overview", headers=asha).json()["disputes"]}
+    assert unread[dispute] >= 1
+    client.get(f"/api/disputes/{dispute}", headers=asha)
+    assert {d["dispute_id"]: d["unread"] for d in client.get("/api/paypal/overview", headers=asha).json()["disputes"]}[dispute] == 0
+
+    reply = client.post(f"/api/disputes/{dispute}/messages", json={"message": "Shipped 20 Sep, tracking 1Z999."}, headers=asha).json()
+    assert reply["messages"][-1]["from"] == "SELLER" and reply["messages"][-1]["name"] == "PayMind Demo Store"
+    rahul_view = {d["dispute_id"]: d["unread"] for d in client.get("/api/paypal/overview", headers=rahul).json()["disputes"]}
+    assert rahul_view[dispute] == 1   # the shop's reply is new for Rahul
+
+    log = services.appdb.recent_actions("u_rahul")
+    assert log[0]["tool"] == "send_message_about_dispute_to_other_party" and log[0]["status"] == "success"
+
+
+def test_customer_cannot_open_or_message_someone_elses_dispute(setup):
+    client, _, services = setup
+    rahul = login(client, "rahul")
+    priyas = dispute_of(services, "user_456")
+    assert client.get(f"/api/disputes/{priyas}", headers=rahul).status_code == 404
+    assert client.post(f"/api/disputes/{priyas}/messages", json={"message": "hi"}, headers=rahul).status_code == 404
+
+
+def test_resolved_dispute_is_read_only(setup):
+    client, _, services = setup
+    asha = login(client, "asha")
+    resolved = next(d["dispute_id"] for d in services.executor.execute("list_disputes", {}).body["items"] if d["status"] == "RESOLVED")
+    assert client.get(f"/api/disputes/{resolved}", headers=asha).json()["can_reply"] is False
+    assert client.post(f"/api/disputes/{resolved}/messages", json={"message": "hi"}, headers=asha).status_code == 422
+
+
+def test_unknown_dispute(setup):
+    client, _, _ = setup
+    assert client.get("/api/disputes/PP-D-00000", headers=login(client, "asha")).status_code == 404
+
+
+def test_whats_new_endpoint(setup):
+    client, _, services = setup
+    items = client.get("/api/whats-new", headers=login(client, "asha")).json()["items"]
+    assert items and {i["kind"] for i in items} <= {"new_message", "needs_reply", "no_reply_yet"}
+    rahul_items = client.get("/api/whats-new", headers=login(client, "rahul")).json()["items"]
+    assert all(i["with"] == "PayMind Demo Store" for i in rahul_items)   # only his own dispute, with the shop
+    assert client.get("/api/whats-new").status_code == 401

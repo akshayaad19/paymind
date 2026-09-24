@@ -157,6 +157,8 @@ class Executor:
         headers = {"Authorization": f"Bearer {self.access_token}", "Content-Type": "application/json"}
         if is_write and request_id:
             headers["PayPal-Request-Id"] = request_id
+        if who:  # customers act as the buyer, accountants as the seller (real PayPal: separate logins)
+            headers["X-PayPal-Actor"] = "BUYER" if who["role"] == "customer" else "SELLER"
         headers.update(extra_headers or {})
 
         status, body, attempts = None, None, 0

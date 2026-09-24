@@ -32,7 +32,7 @@ from langgraph.types import Command, interrupt
 from ..app.database import AppDatabase, User
 from .executor import Executor, ToolRegistry
 from .scope import check_access, filter_results
-from .tools import BUILTIN_SCHEMAS, BUILTINS, FIND_TOOLS, SYSTEM_SEARCH, tool_schema
+from .tools import BUILTIN_SCHEMAS, BUILTINS, CHECK_UPDATES, FIND_TOOLS, SYSTEM_SEARCH, tool_schema
 from .validator import validate
 
 MAX_STEPS = 6          # LLM turns per user message
@@ -73,7 +73,8 @@ class Deps:
 
 def system_prompt(user: User) -> str:
     who = (f"The user is a CUSTOMER: {user.name} (PayPal payer_id {user.payer_id}, email {user.email}). "
-           "They may only see their own records; never reveal anything about other customers."
+           "They may only see their own records; never reveal anything about other customers. "
+           "Their payer_id and other internal IDs are for your lookups only: don't show them in replies."
            if user.is_customer else
            f"The user is an ACCOUNTANT on the shop's finance team: {user.name}. They can see the whole account.")
     return f"""You are PayMind, an assistant that operates the PayPal business account of PayMind Demo Store.
@@ -87,8 +88,10 @@ Rules:
 - Tools that change data are confirmed with the user automatically. Just call them; don't ask "are you sure?" yourself.
 - If a tool returns an error, read it, fix the call and try once more. If it still fails, explain plainly.
 - The tools you were given were already chosen for this request. Call them directly, following each tool's example call; don't browse existing records or templates just to learn a format.
+- For 'anything new?' or 'any messages?', call check_updates. It returns new_message (they wrote, unread), needs_reply (they wrote, user hasn't answered), action_needed (PayPal says it's the user's turn, with a response deadline: always mention days left or overdue) and no_reply_yet (user wrote days ago, no answer; offer to send a reminder). Always say how long ago things happened (e.g. '2 days ago'), using today's date. When you show a dispute's messages, say who wrote each one.
 - If none of your tools fits, call find_tools. For "what can you do" or "status of my last request", call system_search.
 - For totals, add up the amounts yourself and state the number.
+- Messages to the other side of a dispute: if asked to write, word or format one, write it clearly and politely in the user's name (greeting, the facts they gave, a friendly close) and send it with the messaging tool; the user sees the exact text and approves it before it's sent. If they only ask for a draft, show the draft and don't send.
 - Reply briefly with the key facts (IDs, amounts, statuses)."""
 
 
@@ -183,6 +186,11 @@ def build_graph(deps: Deps, checkpointer=None):
 
     # ---- tools: run what the gate allowed ----------------------------------------------------
     def run_builtin(name: str, args: dict, user: User, state: AgentState) -> tuple[str, list[str]]:
+        if name == CHECK_UPDATES:
+            from ..app.updates import whats_new
+
+            items = whats_new(user, deps.executor, deps.appdb)
+            return compact(items or "Nothing new: no new messages, no replies owed, nothing waiting."), []
         if name == FIND_TOOLS:
             hits = deps.search(args.get("query", ""), role=user.role, k=TOP_K)
             return compact([{"tool": n, "description": d} for n, d in hits]), [n for n, _ in hits]
@@ -221,6 +229,10 @@ def build_graph(deps: Deps, checkpointer=None):
             else:
                 result = deps.executor.execute(name, params, request_id=f"pm-{session_id}-{cid}", caller=user)
                 body = filter_results(user, name, result.body)
+                if result.ok and name == "show_dispute_details" and isinstance(body, dict) and body.get("dispute_id"):
+                    from ..app.updates import mark_seen
+
+                    mark_seen(deps.appdb, user, body)  # the user sees the thread in chat: same as opening it
                 content = compact({"ok": result.ok, "status": result.status_code, "result": body}
                                   if result.ok else {"ok": False, "status": result.status_code, "error": result.error})
                 deps.appdb.log_action(

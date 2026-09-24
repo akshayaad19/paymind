@@ -9,6 +9,9 @@ checked on the server for every call; the web page only decides what to show.
   POST /api/chat/confirm        answer a pending yes/no
   GET  /api/paypal/overview     account data: everything for accountants, own records for customers
   GET  /api/paypal/transactions accountant only: transactions for a day / week / month, with totals
+  GET  /api/disputes/{id}       a dispute and its message thread (own disputes only for customers)
+  POST /api/disputes/{id}/messages  send a message to the other side of the dispute
+  GET  /api/whats-new           new messages / replies owed / no reply yet, on open disputes
   GET  /api/audit               the caller's own audit log
 
 Run (mock PayPal must be running on port 8000):
@@ -32,8 +35,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..agent.executor import Executor, ToolRegistry
-from ..agent.scope import filter_results
+from ..agent.scope import check_access, filter_results
 from ..app.database import AppDatabase, User
+from ..app.updates import dispute_updates, mark_seen, whats_new
 from .auth import TOKEN_TTL, create_token, current_user, require_role, secret_key
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -81,6 +85,10 @@ class LoginIn(BaseModel):
 class ChatIn(BaseModel):
     message: str = Field(min_length=1, max_length=2000)
     session_id: str | None = None
+
+
+class MessageIn(BaseModel):
+    message: str = Field(min_length=1, max_length=2000)
 
 
 class ConfirmIn(BaseModel):
@@ -147,6 +155,10 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
     @app.get("/api/paypal/overview", tags=["paypal"])
     def overview(user: User = Depends(current_user)):
         disputes = filter_results(user, "list_disputes", call("list_disputes", {"page_size": 50}, user))["items"]
+        counts = {u["dispute_id"]: u for u in dispute_updates(user, services.executor, services.appdb)}
+        for d in disputes:  # same "new" rule as the assistant's check_updates tool
+            d["unread"] = counts.get(d["dispute_id"], {}).get("unread", 0)
+            d["message_count"] = counts.get(d["dispute_id"], {}).get("message_count", 0)
         if user.is_customer:
             invoices = call("search_for_invoices", {"recipient_email": user.email}, user)["items"]
             return {"role": "customer", "disputes": disputes, "invoices": invoices}
@@ -179,6 +191,55 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         return {"start": start.isoformat(), "end": end.isoformat(), "transactions": list(reversed(rows)),
                 "totals": {"count": len(rows), "sales": round(sales, 2), "refunds": round(refunds, 2),
                            "fees": round(fees, 2), "net": round(sales + refunds + fees, 2)}}
+
+    # ---- dispute conversations ----------------------------------------------------------------------
+
+    def own_dispute(user: User, dispute_id: str) -> dict:
+        """The dispute, if this user may see it. Other people's disputes look like they don't exist."""
+        if check_access(user, {"dispute_id": dispute_id}, services.executor):
+            raise HTTPException(404, "Dispute not found.")
+        result = services.executor.execute("show_dispute_details", {"dispute_id": dispute_id}, caller=user)
+        if result.status_code == 404:
+            raise HTTPException(404, "Dispute not found.")
+        if not result.ok:
+            raise HTTPException(502, f"PayPal: {result.error}")
+        return result.body
+
+    def conversation(dispute: dict) -> dict:
+        tx = (dispute.get("disputed_transactions") or [{}])[0]
+        names = {"BUYER": (tx.get("buyer") or {}).get("name", "Customer"), "SELLER": (tx.get("seller") or {}).get("name", "Shop")}
+        messages = [{"from": m["posted_by"], "name": names.get(m["posted_by"], m["posted_by"]),
+                     "time": m["time_posted"], "text": m["content"]}
+                    for m in sorted(dispute.get("messages", []), key=lambda m: m["time_posted"])]
+        return {"dispute": dispute, "messages": messages, "can_reply": dispute.get("status") != "RESOLVED"}
+
+    @app.get("/api/disputes/{dispute_id}", tags=["disputes"])
+    def open_dispute(dispute_id: str, user: User = Depends(current_user)):
+        dispute = own_dispute(user, dispute_id)
+        mark_seen(services.appdb, user, dispute)
+        return conversation(dispute)
+
+    @app.post("/api/disputes/{dispute_id}/messages", tags=["disputes"])
+    def send_dispute_message(dispute_id: str, body: MessageIn, user: User = Depends(current_user)):
+        """The user typed and sent the message themselves, so no extra confirmation is asked."""
+        own_dispute(user, dispute_id)
+        params = {"dispute_id": dispute_id, "message": body.message.strip()}
+        result = services.executor.execute("send_message_about_dispute_to_other_party", params, caller=user)
+        card = services.registry.get("send_message_about_dispute_to_other_party") or {}
+        services.appdb.log_action(user, card.get("name", "send_message"), params, "success" if result.ok else "failed",
+                                  method=card.get("method"), path=card.get("path"), http_status=result.status_code,
+                                  result_summary=(result.error or "message sent from the dispute page")[:300],
+                                  confirmed=True, request_id=result.request_id)
+        if not result.ok:
+            raise HTTPException(422 if result.status_code == 422 else 502, result.error)
+        dispute = own_dispute(user, dispute_id)
+        mark_seen(services.appdb, user, dispute)
+        return conversation(dispute)
+
+    @app.get("/api/whats-new", tags=["disputes"])
+    def whats_new_for_me(user: User = Depends(current_user)):
+        """New messages, replies you owe, and messages still waiting for an answer (no LLM involved)."""
+        return {"items": whats_new(user, services.executor, services.appdb)}
 
     # ---- audit --------------------------------------------------------------------------
 

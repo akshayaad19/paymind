@@ -653,9 +653,28 @@ Tested: login, wrong password, no token, expired token, **forged token** (signed
 **The page**
 - **Login**: email + password, every time (the token is never stored in the browser).
 - **💬 Chat**: suggestions per role, a typing indicator, and **Yes / No buttons** when an action needs confirmation (large amounts are flagged). If Gemini is down, a clear "nothing was done, try again" message.
-- **🏦 PayMind data**: accountants see the balance, 30-day sales, open disputes, unpaid invoices, and tables of disputes, invoices and transactions. Transactions can be viewed by **day, week or month** (in the user's local time) with ◀ ▶ navigation and totals for the period (sales, refunds, fees, net); the server checks the role and PayPal's 31-day limit. Customers see only their own disputes and invoices.
+- **🏦 PayMind data**: accountants see the balance, 30-day sales, open disputes, unpaid invoices, and tables of disputes, invoices and transactions. Transactions can be viewed by **day, week or month** (in the user's local time) with ◀ ▶ navigation (choosing Day, Week or Month starts at the current one) and totals for the period (sales, refunds, fees, net); the server checks the role and PayPal's 31-day limit. Customers see only their own disputes and invoices.
 - **📜 Audit log**: the user's own actions.
-- **Sidebar**: who's logged in, their role, and suggested questions for that role (short, general starters).
+- **Sidebar**: who's logged in and their role (internal IDs like the payer_id are never shown to customers), and suggested questions for that role.
+
+**Dispute conversations.** Each dispute has a message thread between the customer and the shop (PayPal's own dispute messages, not a separate chat system):
+- **PayMind data → Disputes**: statuses and reasons in plain words from the viewer's side (the shop sees *"Needs your response"* where the customer sees *"Waiting for the shop"*), and an **"N new"** label for unread messages from the other side. Click a dispute to open the conversation panel and reply; resolved disputes are read-only.
+- The mock records **who** sent each message (customer = BUYER, shop = SELLER), as real PayPal does from the login.
+- Customers can only open or message **their own** disputes (others return "not found"). Every message goes to the audit log.
+- Unread is counted by **how many messages you've seen** (threads only grow), not by timestamps, so replies in the same second aren't missed. Stored in the app database (`dispute_reads`).
+
+**What's new card** (top of the chat after login; plain code, no AI, so it works even when Gemini is out of quota). For each open dispute:
+
+| Kind | Meaning | Button |
+|---|---|---|
+| 🔴 Action needed | PayPal says it's your turn (the shop must respond, or the customer must answer an offer), with PayPal's **deadline**: *respond by 28 Sep (3 days left)* or *overdue by N days*. Shown on every login until the dispute's status changes; a holding message doesn't clear it | Open |
+| 📬 New message | The other side wrote and you haven't seen it | Open |
+| ✍️ Waiting for your reply | They wrote, you've seen it, you haven't answered | Reply |
+| ⏳ No reply yet | You wrote 2+ days ago and they haven't answered | Send a reminder (the assistant drafts it, you approve) |
+
+**In the chat**: the always-available `check_updates` tool uses the same summary, so *"Anything new?"* / *"Any reply from the shop?"* match the card; the assistant says how long ago things happened and how many days are left. Reading a dispute's thread in chat counts as read. When asked to write or format a message ("tell Rahul it shipped, make it polite"), it drafts it and the **confirmation card shows the exact text** before sending.
+
+**Gemini models out of daily quota** are skipped for the rest of the day (`ModelChain`), so replies don't wait on models that can't answer; models that are only busy are retried next time.
 
 Internal details (which tools search picked, the tools the agent called and their arguments, system status) are **not shown in the app**. They belong in observability: LangSmith shows every step, failed Gemini or PayPal calls as red error steps, and error rate and latency over time in its Monitoring tab.
 

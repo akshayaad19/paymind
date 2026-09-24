@@ -41,15 +41,38 @@ def qdrant_search(registry: ToolRegistry):
     return search
 
 
+class ModelChain:
+    """Try models in order. A model whose DAILY quota is used up is skipped until the next day,
+    so calls don't waste time on models that can't answer today."""
+
+    def __init__(self, bound: list[tuple[str, object]], exhausted: dict[str, str]):
+        self.bound, self.exhausted = bound, exhausted
+
+    def invoke(self, messages):
+        from datetime import date
+
+        today, last_error = date.today().isoformat(), None
+        for model, llm in self.bound:
+            if self.exhausted.get(model) == today:
+                continue
+            try:
+                return llm.invoke(messages)
+            except Exception as exc:  # busy, rate-limited, out of quota: try the next model
+                last_error = exc
+                if "PerDay" in str(exc):
+                    self.exhausted[model] = today
+        raise last_error or RuntimeError("every model is out of daily quota")
+
+
 def gemini_llm_factory(models: list[str]):
-    """Bind tools per call; if the first model fails (overloaded, out of quota), try the next."""
+    """Bind tools per call; if a model fails (overloaded, out of quota), try the next."""
     from langchain_google_genai import ChatGoogleGenerativeAI
 
-    clients = [ChatGoogleGenerativeAI(model=m, max_retries=1) for m in models]
+    clients = [(m, ChatGoogleGenerativeAI(model=m, max_retries=0)) for m in models]
+    exhausted: dict[str, str] = {}  # model -> day its daily quota ran out (shared by every call)
 
     def llm_for(schemas: list[dict]):
-        bound = [c.bind_tools(schemas) for c in clients]
-        return bound[0].with_fallbacks(bound[1:]) if len(bound) > 1 else bound[0]
+        return ModelChain([(m, c.bind_tools(schemas)) for m, c in clients], exhausted)
 
     return llm_for
 

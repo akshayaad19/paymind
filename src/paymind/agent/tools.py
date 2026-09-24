@@ -12,9 +12,21 @@ from typing import Any
 
 FIND_TOOLS = "find_tools"
 SYSTEM_SEARCH = "system_search"
-BUILTINS = (FIND_TOOLS, SYSTEM_SEARCH)
+CHECK_UPDATES = "check_updates"
+BUILTINS = (FIND_TOOLS, SYSTEM_SEARCH, CHECK_UPDATES)
 
 BUILTIN_SCHEMAS = [
+    {
+        "name": CHECK_UPDATES,
+        "description": (
+            "What needs this user's attention on open disputes: new_message (the other side wrote and it's unread), "
+            "needs_reply (they wrote, no answer yet from this user) and no_reply_yet (this user wrote days ago and "
+            "is still waiting). Each item has the message text and its time. Use it for 'anything new?', "
+            "'any messages?', 'did the shop reply?'. Listing here doesn't mark messages as read; opening a "
+            "dispute with show_dispute_details does."
+        ),
+        "parameters": {"type": "object", "properties": {}},
+    },
     {
         "name": FIND_TOOLS,
         "description": (

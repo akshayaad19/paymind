@@ -129,3 +129,10 @@ def test_only_address_fields_are_checked_as_emails():
     assert is_email_field("recipient_email") and is_email_field("primary_recipients[0].billing_info.email_address")
     assert not is_email_field("sender_batch_header.email_subject")
     assert not is_email_field("sender_batch_header.email_message")
+
+
+def test_confirmation_shows_the_exact_message():
+    v = check("send_message_about_dispute_to_other_party",
+              {"dispute_id": "PP-D-88561", "message": "Hi Rahul, your order shipped on 20 Sep (tracking 1Z999)."})
+    assert v.outcome == "needs_confirmation"
+    assert "“Hi Rahul, your order shipped on 20 Sep (tracking 1Z999).”" in v.confirmation

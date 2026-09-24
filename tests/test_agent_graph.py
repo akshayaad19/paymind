@@ -280,3 +280,105 @@ def test_llm_recovers_after_a_busy_moment(world):
     deps = Deps(llm_for=FlakyLLM(), search=fake_search([]), executor=executor, registry=REGISTRY, appdb=appdb,
                 llm_waits=(0.1,), sleep=lambda s: None)
     assert PayMindAgent(deps, InMemorySaver()).send("u_asha", "s1", "hi").text == "All good."
+
+
+# ---- what's new: check_updates and reading in chat ------------------------------------------------------
+
+def rahuls_dispute(mock):
+    return next(d for d in mock.state.store.db.all("disputes") if d["disputed_transactions"][0]["buyer"]["payer_id"] == "user_123")
+
+
+def test_check_updates_uses_the_whats_new_summary(world):
+    mock, executor, appdb = world
+    dispute = rahuls_dispute(mock)
+    llm = ScriptedLLM([AIMessage("", tool_calls=[call("check_updates", {})]),
+                       lambda msgs: AIMessage(json.dumps(tool_results(msgs)[-1]))])
+    items = {i["dispute_id"]: i for i in json.loads(make_agent(world, llm, []).send("u_asha", "s1", "anything new?").text)}
+    assert items[dispute["dispute_id"]]["kind"] == "new_message" and items[dispute["dispute_id"]]["with"] == "Rahul Sharma"
+    assert all("RESOLVED" != mock.state.store.db.get("disputes", d)["status"] for d in items)
+
+
+def test_nothing_new(world):
+    mock, _, appdb = world
+    for d in mock.state.store.db.all("disputes"):     # the shop resolves every open dispute
+        if d["status"] != "RESOLVED":
+            world[1].execute("accept_claim", {"dispute_id": d["dispute_id"]}, caller=appdb.get_user("u_asha"))
+    llm = ScriptedLLM([AIMessage("", tool_calls=[call("check_updates", {})]),
+                       lambda msgs: AIMessage(str(tool_results(msgs)[-1]))])
+    assert "Nothing new" in make_agent(world, llm, []).send("u_asha", "s1", "anything new?").text
+
+
+def test_reading_a_thread_in_chat_marks_it_read(world):
+    mock, _, appdb = world
+    dispute = rahuls_dispute(mock)
+    assert appdb.dispute_reads("u_asha").get(dispute["dispute_id"], 0) == 0
+    llm = ScriptedLLM([AIMessage("", tool_calls=[call("show_dispute_details", {"dispute_id": dispute["dispute_id"]})]),
+                       AIMessage("Here are the messages.")])
+    make_agent(world, llm, ["show_dispute_details"]).send("u_asha", "s1", f"what did the customer say on {dispute['dispute_id']}?")
+    assert appdb.dispute_reads("u_asha")[dispute["dispute_id"]] == len(dispute["messages"])
+
+
+def test_customer_only_sees_updates_on_own_disputes(world):
+    llm = ScriptedLLM([AIMessage("", tool_calls=[call("check_updates", {})]),
+                       lambda msgs: AIMessage(json.dumps(tool_results(msgs)[-1]))])
+    # nothing new from the shop for Rahul in the starting data; and never another customer's dispute
+    text = make_agent(world, llm, []).send("u_rahul", "s1", "any reply from the shop?").text
+    assert "Priya" not in text and "Wei" not in text
+
+
+def test_model_chain_skips_models_out_of_daily_quota():
+    from paymind.agent.factory import ModelChain
+
+    calls = []
+
+    class Model:
+        def __init__(self, name, error=None):
+            self.name, self.error = name, error
+        def invoke(self, messages):
+            calls.append(self.name)
+            if self.error:
+                raise RuntimeError(self.error)
+            return AIMessage(f"from {self.name}")
+
+    exhausted = {}
+    chain = ModelChain([("big", Model("big", "429 quotaId: GenerateRequestsPerDayPerProjectPerModel-FreeTier")),
+                        ("busy", Model("busy", "503 UNAVAILABLE")), ("lite", Model("lite"))], exhausted)
+    assert chain.invoke([]).content == "from lite"
+    assert chain.invoke([]).content == "from lite"
+    assert calls == ["big", "busy", "lite", "busy", "lite"]  # "big" is skipped after its daily quota ran out
+
+
+def test_whats_new_kinds():
+    """new_message → needs_reply → a holding reply doesn't clear the shop's to-do → resolving does."""
+    from datetime import datetime, timedelta, timezone
+    from fastapi.testclient import TestClient
+    import tempfile, pathlib
+    from paymind.app.updates import mark_seen, whats_new
+
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    mock = create_app(db_path=tmp / "mock.db", slow_seconds=0)
+    executor = Executor(REGISTRY, base_url="http://testserver", client=TestClient(mock), sleep=lambda s: None)
+    appdb = AppDatabase(tmp / "app.db")
+    asha, rahul = appdb.get_user("u_asha"), appdb.get_user("u_rahul")
+    rid = rahuls_dispute(mock)["dispute_id"]
+    now = datetime.now(timezone.utc)
+    items = lambda user, at=now: {i["dispute_id"]: i for i in whats_new(user, executor, appdb, now=at)}
+
+    first = items(asha)[rid]
+    assert first["kind"] == "new_message" and first["action_needed"] and first["due_date"]   # his claim, her turn, deadline
+    mark_seen(appdb, asha, executor.execute("show_dispute_details", {"dispute_id": rid}).body)
+    assert items(asha)[rid]["kind"] == "needs_reply"
+
+    executor.execute("send_message_about_dispute_to_other_party", {"dispute_id": rid, "message": "We'll update you shortly."}, caller=asha)
+    assert items(asha)[rid]["kind"] == "action_needed"                      # a holding reply isn't an action
+    assert items(asha, now + timedelta(days=1))[rid]["kind"] == "action_needed"   # still there tomorrow
+    assert items(asha, now + timedelta(days=30))[rid]["days_left"] < 0      # and overdue later
+    assert items(rahul)[rid]["kind"] == "new_message"                       # Rahul sees her message
+
+    executor.execute("accept_claim", {"dispute_id": rid}, caller=asha)      # she actually resolves it
+    assert rid not in items(asha)
+
+    wei = next(d["dispute_id"] for d in mock.state.store.db.all("disputes") if d["status"] == "WAITING_FOR_BUYER_RESPONSE")
+    assert items(asha, now + timedelta(days=5))[wei]["kind"] == "no_reply_yet"   # shop's offer, buyer silent
+    resolved = [d["dispute_id"] for d in mock.state.store.db.all("disputes") if d["status"] == "RESOLVED"]
+    assert not set(resolved) & set(items(asha))                             # closed cases never show

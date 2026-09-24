@@ -21,6 +21,12 @@ def store_of(request: Request) -> Store:
     return request.app.state.store
 
 
+def actor(request: Request) -> str:
+    """Who is acting: BUYER or SELLER. Real PayPal knows this from the access token (buyer and
+    seller log in separately); the mock is told through the X-PayPal-Actor header."""
+    return "BUYER" if request.headers.get("x-paypal-actor", "").upper() == "BUYER" else "SELLER"
+
+
 def get_dispute(store: Store, dispute_id: str) -> dict:
     dispute = store.db.get("disputes", dispute_id)
     if not dispute:
@@ -136,9 +142,11 @@ def send_message_about_dispute_to_other_party(request: Request, dispute_id: str,
     dispute = get_open_dispute(store, dispute_id)
     if not body.get("message"):
         raise PayPalError(400, "MISSING_REQUIRED_PARAMETER", "Include the message text.", "message")
-    dispute["messages"].append({"posted_by": "SELLER", "time_posted": iso(store.now()), "content": body["message"]})
+    posted_by = actor(request)
+    dispute["messages"].append({"posted_by": posted_by, "time_posted": iso(store.now()), "content": body["message"]})
     save(store, dispute)
-    return {"links": [{"href": f"/v1/customer/disputes/{dispute_id}", "rel": "self", "method": "GET"}]}
+    return {"links": [{"href": f"/v1/customer/disputes/{dispute_id}", "rel": "self", "method": "GET"}],
+            "posted_by": posted_by}
 
 
 @router.post("/{dispute_id}/provide-evidence")
