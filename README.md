@@ -459,6 +459,41 @@ Each record is one row holding PayPal-shaped JSON. You can open either file in a
 # back to the starting data: curl -X POST http://localhost:8000/mock/reset
 ```
 
+### Step 5: The agent (in progress)
+
+Built in parts: **5a** app database ✅ · 5b executor · 5c validator · 5d agent loop (LangGraph + Gemini) · 5e chat screen.
+
+#### 5a: App database ✅
+
+`src/paymind/app/database.py`: our app's own data, separate from the mock PayPal database. PayPal only knows the shop's account; knowing who is chatting, their role, and what they did is the app's job.
+
+```
+data/app/initial.db   starting data: demo users (committed)
+data/app/app.db       working copy (git-ignored), created from initial.db on first use
+```
+
+Unlike the mock (PayPal-shaped JSON), these tables use **real columns**, because System Search needs to filter them.
+
+**`users`**: who can log in
+
+| user_id | name | role | payer_id |
+|---|---|---|---|
+| `u_asha` | Asha Iyer | accountant | (none: sees everything) |
+| `u_rahul` | Rahul Sharma | customer | `user_123` |
+| `u_priya` | Priya Nair | customer | `user_456` |
+
+A customer **must** be linked to their PayPal `payer_id` (checked in code and by a database constraint), so customers can only ever be scoped to their own records. Role is `customer` or `accountant`.
+
+**`audit_log`**: one row per tool call the agent tries
+
+`time, session_id, user_id, role, tool, method, path, params (JSON), status, http_status, result_summary, confirmed, request_id`
+
+- `user_id` is the main link: every action belongs to a user. The payment / invoice / dispute ID the action was about is inside `params`.
+- `status`: `success` · `failed` · `pending_confirmation` · `declined` · `blocked`.
+- `request_id` is the `PayPal-Request-Id` used for idempotency, not a payment ID. `session_id` is the chat conversation.
+- Reading the log is **always scoped to one user** with **fixed filters only** (tool, status, since, limit), no free-form SQL. Rahul can never read Asha's history.
+- Records actions only; login/logout tracking is decided with the chat screen (5e).
+
 ## Status
 
-Design complete; steps 1–4 (parser, enricher, tool index, mock PayPal server) done. Next: step 5, the agent.
+Design complete; steps 1–4 done; step 5 (agent) in progress: 5a app database done, 5b executor next.
