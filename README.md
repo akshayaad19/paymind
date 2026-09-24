@@ -78,10 +78,50 @@ data/mock/example_responses.json      PayPal's example responses per tool, keyed
 
 **Why deterministic:** the parser owns the facts (paths, methods, parameters), where mistakes would break API calls. The enricher only adds language (descriptions, example questions, roles), so an LLM mistake can't break an API call.
 
-### Step 2: LLM enricher ⏭️
+### Step 2: LLM enricher ✅
 
-Next: improve descriptions, add example questions, category, read/write review and roles → `data/tools/tools.json`.
+`src/paymind/ingest/enricher.py` adds the language that search and the agent need. It is a **one-time, offline** step: the app reads the finished `tools.json` and never calls the enricher at runtime. Re-run it only when tools change; it skips tools that are already enriched (`--force` redoes them).
+
+```
+data/tools/raw_tools.json  ──► Gemini, one category per call ──► validate ──► data/tools/tools.json
+```
+
+**What it adds to each card:**
+
+| Field | Source |
+|---|---|
+| `description` | LLM: 1–2 plain sentences in users' words, written to tell sibling tools apart |
+| `example_questions` | LLM: 4 varied things a user might type |
+| `action_type` | LLM reviews the parser's read/write guess |
+| `allowed_roles` | LLM: `customer` and/or `accountant` |
+| `requires_confirmation` | **Code**: `true` for every write |
+| `enrichment_status`, `eval_only` | Code |
+
+**Example** (`send_invoice`):
+> *Deliver an invoice to the customer immediately or schedule it to be sent automatically on a future date. This changes the bill from a draft to an active, payable request.*
+> • "Send out invoice INV-481 now" • "Mail the bill for $500 to the client" • "Schedule this draft to be sent next Monday" • "Deliver invoice #204 to the buyer"
+
+**Design choices:**
+- **One category per call.** The LLM sees sibling tools side by side (send invoice vs send reminder vs cancel vs delete) and writes descriptions that separate them, which is what search needs. It also cuts ~112 calls to ~14.
+- **Facts are never touched.** Name, method, path and parameters are always copied from the raw card; the LLM only sees them as context.
+- **Every LLM answer is validated** (Pydantic): 3–6 questions, roles from the allowed set, read/write only. A tool that fails keeps its raw values, is marked `failed`, and defaults to the safest role (accountant only).
+- **Progress is saved after every call**, so an interrupted run resumes where it stopped.
+- **Retry and fallback.** Overloaded (503) or rate-limited (429) calls are retried with backoff (5s → 10s → 20s → 40s), then the next model in `GEMINI_FALLBACK_MODELS` is tried. A model whose free-tier **daily** quota is used up is skipped for the rest of the run instead of being retried.
+
+**Result:** 112/112 enriched, 4 questions each, facts unchanged (checked automatically). 40 read / 72 write (all writes require confirmation). Roles: 94 accountant-only, 16 both, 2 customer-only (accepting or denying a seller's dispute offer, which only the buyer can do).
+
+**Setup:** copy `.env.example` to `.env` and set `GOOGLE_API_KEY` (from https://aistudio.google.com/apikey). Never put the real key in `.env.example`; that file is committed.
+
+```bash
+.venv/bin/python -m paymind.ingest.enricher                 # enrich what's missing
+.venv/bin/python -m paymind.ingest.enricher --only invoices # one category
+.venv/bin/python -m paymind.ingest.enricher --force         # redo everything
+```
+
+### Step 3: Tool index (Qdrant) ⏭️
+
+Next: build search text from each card, create sparse (BM25) and dense vectors with fastembed, and store them in a local Qdrant `tools` collection with role payloads.
 
 ## Status
 
-Design complete; step 1 (parser) done; step 2 (enricher) next.
+Design complete; step 1 (parser) and step 2 (enricher) done; step 3 (tool index) next.
