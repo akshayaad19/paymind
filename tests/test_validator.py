@@ -84,8 +84,8 @@ def test_bad_email():
 # ---- 4. grounding ----------------------------------------------------------------------------------
 
 def test_invented_id_is_rejected():
-    v = check("refund_captured_payment", {"capture_id": "CAP-999"})
-    assert v.outcome == "invalid" and "not mentioned" in v.errors[0] and "CAP-999" in v.errors[0]
+    v = check("refund_captured_payment", {"capture_id": "CAP-999", "amount": usd("5.00")})
+    assert v.outcome == "invalid" and any("not mentioned" in e and "CAP-999" in e for e in v.errors)
 
 
 def test_id_from_earlier_tool_result_is_fine():
@@ -122,3 +122,10 @@ def test_customer_can_use_their_tools():
 def test_all_errors_reported_together():
     v = check("refund_captured_payment", {"capture_id": "CAP-999", "amount": usd("-1"), "reason": "x"})
     assert v.outcome == "invalid" and len(v.errors) == 3  # unknown param, bad amount, invented id
+
+
+def test_only_address_fields_are_checked_as_emails():
+    from paymind.agent.validator import is_email_field
+    assert is_email_field("recipient_email") and is_email_field("primary_recipients[0].billing_info.email_address")
+    assert not is_email_field("sender_batch_header.email_subject")
+    assert not is_email_field("sender_batch_header.email_message")

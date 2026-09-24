@@ -158,3 +158,31 @@ def test_daily_quota_skips_model_for_rest_of_run():
     assert enrich("s", "u") is good
     assert calls == ["main", "backup", "backup"]  # main tried once, never again
     assert waits == []
+
+
+def test_call_example_optional_body_is_allowed():
+    """Some writes take an optional body (e.g. capture the full amount with an empty body)."""
+    import json as _json
+    from paymind.agent.executor import ToolRegistry
+    from paymind.ingest.call_examples import CallExample, check_example
+
+    card = ToolRegistry().get("capture_authorized_payment")
+    answer = CallExample(name=card["name"], required_params=[], example_call_json=_json.dumps({"authorization_id": "0VF52814937998046"}))
+    required, example, problems = check_example(card, answer)
+    assert problems == [] and required == ["authorization_id"]  # path params are always required
+
+
+def test_call_example_is_tried_on_a_sandbox_mock():
+    """An example that matches the schema but that PayPal would reject is caught by the dry run."""
+    import json as _json
+    from paymind.agent.executor import ToolRegistry
+    from paymind.ingest.call_examples import CallExample, check_example, sandbox_dry_run
+
+    card, dry = ToolRegistry().get("create_draft_invoice"), sandbox_dry_run()
+    weak = CallExample(name=card["name"], required_params=[],
+                       example_call_json=_json.dumps({"detail": {"currency_code": "USD"}}))
+    assert any("mock PayPal rejected" in p for p in check_example(card, weak, dry)[2])
+    good = CallExample(name=card["name"], required_params=["primary_recipients", "items"], example_call_json=_json.dumps({
+        "primary_recipients": [{"billing_info": {"email_address": "john@x.com"}}],
+        "items": [{"name": "Consulting", "quantity": "1", "unit_amount": {"currency_code": "USD", "value": "50.00"}}]}))
+    assert check_example(card, good, dry)[2] == []

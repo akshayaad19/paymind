@@ -461,7 +461,7 @@ Each record is one row holding PayPal-shaped JSON. You can open either file in a
 
 ### Step 5: The agent (in progress)
 
-Built in parts: **5a** app database ✅ · **5b** executor ✅ · **5c** validator ✅ · 5d agent loop (LangGraph + Gemini) · 5e chat screen.
+Built in parts: **5a** app database ✅ · **5b** executor ✅ · **5c** validator ✅ · **5d** agent loop (LangGraph + Gemini) ✅ · 5e chat screen.
 
 #### 5a: App database ✅
 
@@ -561,6 +561,60 @@ Gemini suggests: refund_captured_payment(capture_id="CAP-999", amount=40)
 - **Grounding** is what answers the brief's "hallucinate parameters": the LLM can't invent an ID, it has to look it up first.
 - Not here: **customer data scope** (a customer may only see *their own* records). That needs the actual PayPal data, so it's checked around the executor in 5d.
 
+#### 5d: Agent loop (LangGraph + Gemini) ✅
+
+`src/paymind/agent/graph.py` connects everything: search, the LLM, the validator, customer scope, the executor and the audit log.
+
+```
+search_tools ─► agent (Gemini) ──tool calls?── no ──► reply
+                   ▲                 │ yes
+                   │                 ▼
+                   │              gate   validate · customer scope · ⏸ ask yes/no   (changes no data)
+                   │                 ▼
+                   └── results ── tools  run approved calls · filter for customers · audit log
+```
+
+| Step | What it does |
+|---|---|
+| `search_tools` | Hybrid search (step 3) with the user's role → top 5 tools. Short follow-ups ("refund the first one") are searched together with the previous message |
+| `agent` | Gemini sees the offered tools + `find_tools` + `system_search`, and either answers or calls tools. Max **6** steps per message |
+| `gate` | Runs the validator (5c) and the customer scope check on every call; for writes, **pauses** with LangGraph `interrupt()` and asks yes/no |
+| `tools` | Runs what the gate allowed through the executor (5b), filters list results for customers, writes the audit log (5a), and returns results to the agent |
+
+**Why a separate gate:** when LangGraph resumes after a pause, it re-runs the paused step from the start. The gate only checks and asks, and execution happens in the next step, so an action is **never run twice**. Each write also carries a `PayPal-Request-Id` built from its tool-call ID, so even a repeat would be replayed by PayPal.
+
+**Built-in tools** (always offered):
+- `find_tools(query)`: search the whole catalog when the offered tools don't fit; found tools can be called in the next step.
+- `system_search(mode)`: `capabilities` → what the assistant can do (tool index, role-filtered, fake tools hidden); `activity` → the user's own audit log.
+
+**Customer data scope** (`scope.py`): before a customer touches a record named by ID (dispute, invoice, payment, order, refund), it's looked up and must belong to them (payer_id, or recipient email for invoices); list results are filtered to their own records.
+
+**State** is checkpointed in `data/app/checkpoints.db` (per session), so follow-ups and pending confirmations survive between messages.
+
+**LLM outage:** if every model is busy or out of quota, the agent tries 3 times (waiting 3s, then 8s) and then replies *"I can't reach the AI model right now… nothing was done. Please try again in a few minutes."*, not a crash.
+
+**Example calls for tools** (`src/paymind/ingest/call_examples.py`, one-time, offline). A live test showed the agent **wandering**: for "send an invoice for $50", search offered the right tools, but `create_draft_invoice` had a 4,000-character schema with nothing marked required, so Gemini browsed old invoices to learn the format and ran out of steps. Fix: for the **91 tools with real inputs** (writes, and lookups with a body or filters; 21 simple ID lookups are skipped), Gemini writes `required_params` and a small `example_call`, in batches by category. Code checks every answer:
+- fields exist in the schema, path parameters always required, types and business rules pass;
+- for tools that create things, the example is **actually sent to a throwaway copy of the mock server** and must not be rejected;
+- a rejected answer is sent back **once with the reason** so Gemini can correct it.
+
+The agent then sees each offered tool's *"Required: …"* and *"Example call: {…}"*, plus the rule *"call the tools you were given directly; don't browse records to learn a format."* **Result: 91/91 tools have a verified example call.**
+
+```bash
+.venv/bin/python -m paymind.ingest.call_examples       # fill in missing examples
+.venv/bin/python -m paymind.agent.factory --user u_asha   # chat in the terminal (mock server running)
+```
+
+**Live results so far** (Gemini + Qdrant Cloud + mock server):
+
+| Request | Result |
+|---|---|
+| "Is there a dispute open from user_123?" | ✅ `list_disputes` → PP-D-88561, $40, item not received |
+| "Send an invoice for $50 to john@x.com…" (before example calls) | ❌ Wandered and hit the 6-step limit; led to the example-call fix |
+| Same request (after example calls) | ⏳ Not re-run yet: Gemini's free tier was out of quota or overloaded |
+
+**Gemini free tier:** about 20 requests per model per day, and frequent 503 "high demand" errors. Each question takes 2–4 LLM calls, so replies can be slow or fail. Billing gives much higher limits.
+
 ## Status
 
-Design complete; steps 1–4 done; step 5 (agent) in progress: 5a app database, 5b executor and 5c validator done; 5d agent loop next.
+Design complete; steps 1–4 done; step 5 (agent) in progress: 5a–5d done (app database, executor, validator, agent loop); 5e chat screen next, and a live re-test of the invoice flow once Gemini quota resets.

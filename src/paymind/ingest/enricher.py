@@ -190,16 +190,20 @@ def with_retry_and_fallback(
     return enrich
 
 
-def make_gemini_enricher(model: str) -> Enrich:
+def make_gemini_enricher_for(model: str, output: type[BaseModel]) -> Callable[[str, str], BaseModel]:
+    """A Gemini call that returns `output` (a Pydantic model). Retries are handled by with_retry_and_fallback."""
     from langchain_google_genai import ChatGoogleGenerativeAI
 
-    llm = ChatGoogleGenerativeAI(model=model, max_retries=0)  # retries handled by with_retry_and_fallback
-    structured = llm.with_structured_output(EnrichmentBatch)
+    structured = ChatGoogleGenerativeAI(model=model, max_retries=0).with_structured_output(output)
 
-    def enrich(system: str, user: str) -> EnrichmentBatch:
+    def call(system: str, user: str) -> BaseModel:
         return structured.invoke([("system", system), ("human", user)])
 
-    return enrich
+    return call
+
+
+def make_gemini_enricher(model: str) -> Enrich:
+    return make_gemini_enricher_for(model, EnrichmentBatch)
 
 
 def main() -> None:

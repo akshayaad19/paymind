@@ -102,6 +102,12 @@ def money_values(params: dict[str, Any]) -> list[tuple[str, dict]]:
     return [(p, v) for p, v in walk(params) if isinstance(v, dict) and "value" in v and "currency_code" in v]
 
 
+def is_email_field(path: str) -> bool:
+    """Fields that hold an address: email, email_address, recipient_email... (not email_subject)."""
+    key = re.split(r"[.\[]", path)[-1].lower()
+    return key in ("email", "email_address") or key.endswith("_email")
+
+
 def check_business_rules(params: dict[str, Any]) -> tuple[list[str], Decimal]:
     errors, largest = [], Decimal("0")
     for path, money in money_values(params):
@@ -118,7 +124,7 @@ def check_business_rules(params: dict[str, Any]) -> tuple[list[str], Decimal]:
             errors.append(f"{path}: only {CURRENCY} is supported, got {money['currency_code']}")
         largest = max(largest, amount)
     for path, value in walk(params):
-        if isinstance(value, str) and ("email" in path.lower()) and not EMAIL.match(value):
+        if isinstance(value, str) and is_email_field(path) and not EMAIL.match(value):
             errors.append(f"{path}: '{value}' is not a valid email address")
     return errors, largest
 

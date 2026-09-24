@@ -60,7 +60,11 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "intent",
+        "purchase_units"
+      ]
     },
     "example_request_body": {
       "intent": "{{order_intent}}",
@@ -95,7 +99,23 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "intent",
+      "purchase_units"
+    ],
+    "example_call": {
+      "intent": "CAPTURE",
+      "purchase_units": [
+        {
+          "amount": {
+            "currency_code": "USD",
+            "value": "50.00"
+          }
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "confirm_payment_source",
@@ -156,7 +176,20 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "order_id"
+    ],
+    "example_call": {
+      "order_id": "5O190127TN364715T",
+      "payment_source": {
+        "card": {
+          "number": "4111111111111111",
+          "expiry": "2035-12"
+        }
+      }
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_order_details",
@@ -287,7 +320,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "order_id"
+    ],
+    "example_call": {
+      "order_id": "5O190127TN364715T"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "authorize_payment_for_order",
@@ -324,7 +364,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "order_id"
+    ],
+    "example_call": {
+      "order_id": "5O190127TN364715T"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "capture_payment_for_order",
@@ -361,7 +408,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "order_id"
+    ],
+    "example_call": {
+      "order_id": "5O190127TN364715T"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "confirm_payment_source_3ds",
@@ -475,7 +529,21 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "order_id"
+    ],
+    "example_call": {
+      "order_id": "5O190127TN364715T",
+      "payment_source": {
+        "card": {
+          "number": "4032037064388131",
+          "expiry": "2035-12",
+          "name": "John Doe"
+        }
+      }
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "add_tracking_information_for_an_order",
@@ -528,7 +596,17 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "order_id"
+    ],
+    "example_call": {
+      "order_id": "5O190127TN364715T",
+      "capture_id": "2GG279541U471931P",
+      "tracking_number": "TRK123456",
+      "carrier": "FEDEX"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "update_tracking_information_for_an_order",
@@ -594,7 +672,16 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "order_id",
+      "tracking_id"
+    ],
+    "example_call": {
+      "order_id": "5O190127TN364715T",
+      "tracking_id": "TRK123456"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_details_for_authorized_payment",
@@ -666,7 +753,8 @@
         }
       },
       "required": [
-        "authorization_id"
+        "authorization_id",
+        "amount"
       ]
     },
     "example_request_body": {
@@ -688,7 +776,19 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "authorization_id",
+      "amount"
+    ],
+    "example_call": {
+      "authorization_id": "2GG279541U471931P",
+      "amount": {
+        "value": "50.00",
+        "currency_code": "USD"
+      }
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "void_authorized_payment",
@@ -726,7 +826,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "authorization_id"
+    ],
+    "example_call": {
+      "authorization_id": "2GG279541U471931P"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "capture_authorized_payment",
@@ -775,7 +882,8 @@
         }
       },
       "required": [
-        "authorization_id"
+        "authorization_id",
+        "amount"
       ]
     },
     "example_request_body": {
@@ -801,7 +909,20 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "authorization_id",
+      "amount"
+    ],
+    "example_call": {
+      "authorization_id": "2GG279541U471931P",
+      "amount": {
+        "value": "50.00",
+        "currency_code": "USD"
+      },
+      "final_capture": true
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_captured_payment_details",
@@ -881,7 +1002,8 @@
         }
       },
       "required": [
-        "capture_id"
+        "capture_id",
+        "amount"
       ]
     },
     "example_request_body": {
@@ -905,7 +1027,20 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "capture_id",
+      "amount"
+    ],
+    "example_call": {
+      "capture_id": "2GG279541U471931P",
+      "amount": {
+        "value": "50.00",
+        "currency_code": "USD"
+      },
+      "note_to_payer": "Defective product"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_refund_details",
@@ -1353,7 +1488,12 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "detail",
+        "primary_recipients",
+        "items"
+      ]
     },
     "example_request_body": {
       "detail": {
@@ -1523,7 +1663,41 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "detail",
+      "primary_recipients",
+      "items"
+    ],
+    "example_call": {
+      "detail": {
+        "invoice_number": "INV2-Z56S-5LLA-Q52L-CPZ5",
+        "invoice_date": "2026-08-01",
+        "currency_code": "USD"
+      },
+      "primary_recipients": [
+        {
+          "billing_info": {
+            "name": {
+              "given_name": "John",
+              "surname": "Doe"
+            },
+            "email_address": "john@x.com"
+          }
+        }
+      ],
+      "items": [
+        {
+          "name": "Consulting Services",
+          "quantity": "1",
+          "unit_amount": {
+            "currency_code": "USD",
+            "value": "50.00"
+          }
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_invoice_details",
@@ -1612,7 +1786,13 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "page": 1,
+      "page_size": 20
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "generate_qr_code",
@@ -1666,7 +1846,16 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "invoice_id"
+    ],
+    "example_call": {
+      "invoice_id": "INV2-Z56S-5LLA-Q52L-CPZ5",
+      "width": 500,
+      "height": 500
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "fully_update_invoice",
@@ -2361,7 +2550,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "invoice_id"
+    ],
+    "example_call": {
+      "invoice_id": "INV2-Z56S-5LLA-Q52L-CPZ5",
+      "status": "DRAFT"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "send_invoice",
@@ -2430,7 +2627,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "invoice_id"
+    ],
+    "example_call": {
+      "invoice_id": "INV2-Z56S-5LLA-Q52L-CPZ5",
+      "send_to_recipient": true
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "send_invoice_reminder",
@@ -2500,7 +2705,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "invoice_id"
+    ],
+    "example_call": {
+      "invoice_id": "INV2-Z56S-5LLA-Q52L-CPZ5",
+      "send_to_recipient": true
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "cancel_sent_invoice",
@@ -2569,7 +2782,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "invoice_id"
+    ],
+    "example_call": {
+      "invoice_id": "INV2-Z56S-5LLA-Q52L-CPZ5",
+      "send_to_recipient": true
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "delete_invoice",
@@ -2607,7 +2828,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "invoice_id"
+    ],
+    "example_call": {
+      "invoice_id": "INV2-Z56S-5LLA-Q52L-CPZ5"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "search_for_invoices",
@@ -2757,7 +2985,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "recipient_email": "john@x.com",
+      "status": [
+        "DRAFT"
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "record_payment_for_invoice",
@@ -2887,7 +3123,20 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "invoice_id"
+    ],
+    "example_call": {
+      "invoice_id": "INV2-Z56S-5LLA-Q52L-CPZ5",
+      "method": "CASH",
+      "payment_date": "2026-08-01",
+      "amount": {
+        "currency_code": "USD",
+        "value": "50.00"
+      }
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "delete_external_payment",
@@ -2931,7 +3180,16 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "invoice_id",
+      "transaction_id"
+    ],
+    "example_call": {
+      "invoice_id": "INV2-Z56S-5LLA-Q52L-CPZ5",
+      "transaction_id": "2GG279541U471931P"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "record_refund_for_invoice",
@@ -2996,7 +3254,20 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "invoice_id"
+    ],
+    "example_call": {
+      "invoice_id": "INV2-Z56S-5LLA-Q52L-CPZ5",
+      "method": "BANK_TRANSFER",
+      "refund_date": "2026-08-01",
+      "amount": {
+        "currency_code": "USD",
+        "value": "50.00"
+      }
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "delete_external_refund",
@@ -3040,7 +3311,16 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "invoice_id",
+      "transaction_id"
+    ],
+    "example_call": {
+      "invoice_id": "INV2-Z56S-5LLA-Q52L-CPZ5",
+      "transaction_id": "2GG279541U471931P"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_templates",
@@ -3085,7 +3365,13 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "page": 1,
+      "page_size": 20
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "create_template",
@@ -3780,7 +4066,13 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "name": "Standard Template",
+      "default_template": true
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_template_details",
@@ -4521,7 +4813,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "template_id"
+    ],
+    "example_call": {
+      "template_id": "TEMP-12345",
+      "name": "Updated Template"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "delete_template",
@@ -4559,7 +4859,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "template_id"
+    ],
+    "example_call": {
+      "template_id": "TEMP-12345"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "create_product",
@@ -4601,7 +4908,11 @@
           "type": "string",
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "name",
+        "type"
+      ]
     },
     "example_request_body": {
       "name": "T-Shirt",
@@ -4625,7 +4936,17 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "name",
+      "type"
+    ],
+    "example_call": {
+      "name": "T-Shirt",
+      "type": "PHYSICAL",
+      "description": "Cotton XL"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_products",
@@ -4670,7 +4991,12 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "page_size": 20
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_product_details",
@@ -4769,7 +5095,21 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "product_id"
+    ],
+    "example_call": {
+      "product_id": "PROD-12345",
+      "items": [
+        {
+          "op": "replace",
+          "path": "/description",
+          "value": "Blue M"
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "create_plan",
@@ -4882,7 +5222,12 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "product_id",
+        "name",
+        "billing_cycles"
+      ]
     },
     "example_request_body": {
       "product_id": "{{product_id}}",
@@ -4948,7 +5293,34 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "product_id",
+      "name",
+      "billing_cycles"
+    ],
+    "example_call": {
+      "product_id": "PROD-12345",
+      "name": "Monthly Plan",
+      "billing_cycles": [
+        {
+          "frequency": {
+            "interval_unit": "MONTH",
+            "interval_count": 1
+          },
+          "tenure_type": "REGULAR",
+          "sequence": 1,
+          "total_cycles": 12,
+          "pricing_scheme": {
+            "fixed_price": {
+              "value": "50.00",
+              "currency_code": "USD"
+            }
+          }
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_plans",
@@ -5003,7 +5375,12 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "page_size": 10
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_plan_details",
@@ -5101,7 +5478,21 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "billing_plan_id"
+    ],
+    "example_call": {
+      "billing_plan_id": "PLAN-12345",
+      "items": [
+        {
+          "op": "replace",
+          "path": "/payment_preferences/payment_failure_threshold",
+          "value": 7
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "deactivate_plan",
@@ -5138,7 +5529,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "billing_plan_id"
+    ],
+    "example_call": {
+      "billing_plan_id": "PLAN-12345"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "activate_plan",
@@ -5175,7 +5573,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "billing_plan_id"
+    ],
+    "example_call": {
+      "billing_plan_id": "PLAN-12345"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "update_pricing",
@@ -5280,7 +5685,25 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "billing_plan_id"
+    ],
+    "example_call": {
+      "billing_plan_id": "PLAN-12345",
+      "pricing_schemes": [
+        {
+          "billing_cycle_sequence": 1,
+          "pricing_scheme": {
+            "fixed_price": {
+              "value": "50.00",
+              "currency_code": "USD"
+            }
+          }
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "create_subscription",
@@ -5405,7 +5828,10 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "plan_id"
+      ]
     },
     "example_request_body": {
       "plan_id": "{{billing_plan_id}}",
@@ -5461,7 +5887,22 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "plan_id"
+    ],
+    "example_call": {
+      "plan_id": "PLAN-12345",
+      "start_time": "2026-08-01T00:00:00Z",
+      "subscriber": {
+        "name": {
+          "given_name": "John",
+          "surname": "Doe"
+        },
+        "email_address": "john@x.com"
+      }
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_subscription_details",
@@ -5504,7 +5945,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "subscription_id"
+    ],
+    "example_call": {
+      "subscription_id": "I-BW452243G105"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "update_subscription",
@@ -5633,7 +6081,32 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "subscription_id"
+    ],
+    "example_call": {
+      "subscription_id": "I-BW452243G105",
+      "items": [
+        {
+          "op": "replace",
+          "path": "/subscriber/shipping_address",
+          "value": {
+            "name": {
+              "full_name": "John Doe"
+            },
+            "address": {
+              "address_line_1": "2211 N First Street",
+              "admin_area_2": "San Jose",
+              "admin_area_1": "CA",
+              "postal_code": "95131",
+              "country_code": "US"
+            }
+          }
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "revise_plan_or_quantity_of_subscription",
@@ -5785,7 +6258,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "subscription_id"
+    ],
+    "example_call": {
+      "subscription_id": "I-BW452243G105",
+      "plan_id": "P-5ML4271244454363WXNWU4QI"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "suspend_subscription",
@@ -5828,7 +6309,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "subscription_id"
+    ],
+    "example_call": {
+      "subscription_id": "I-BW452243G105",
+      "reason": "Customer requested temporary pause"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "activate_subscription",
@@ -5871,7 +6360,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "subscription_id"
+    ],
+    "example_call": {
+      "subscription_id": "I-BW452243G105",
+      "reason": "Customer requested resumption"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "cancel_subscription",
@@ -5915,7 +6412,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "subscription_id"
+    ],
+    "example_call": {
+      "subscription_id": "I-BW452243G105",
+      "reason": "No longer needed"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "capture_authorized_payment_on_subscription",
@@ -5979,7 +6484,19 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "subscription_id"
+    ],
+    "example_call": {
+      "subscription_id": "I-BW452243G105",
+      "note": "Outstanding balance collection",
+      "amount": {
+        "currency_code": "USD",
+        "value": "50.00"
+      }
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_transactions_for_subscription",
@@ -6029,7 +6546,18 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "subscription_id",
+      "start_time",
+      "end_time"
+    ],
+    "example_call": {
+      "subscription_id": "I-BW452243G105",
+      "start_time": "2026-08-01T00:00:00Z",
+      "end_time": "2026-08-31T23:59:59Z"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "create_batch_payout",
@@ -6093,7 +6621,11 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "sender_batch_header",
+        "items"
+      ]
     },
     "example_request_body": {
       "sender_batch_header": {
@@ -6148,7 +6680,28 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "sender_batch_header",
+      "items"
+    ],
+    "example_call": {
+      "sender_batch_header": {
+        "sender_batch_id": "Payout_2026_01",
+        "email_subject": "You have a payout!"
+      },
+      "items": [
+        {
+          "recipient_type": "EMAIL",
+          "amount": {
+            "value": "50.00",
+            "currency": "USD"
+          },
+          "receiver": "john@x.com"
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_payout_batch_details",
@@ -6206,7 +6759,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "payout_batch_id"
+    ],
+    "example_call": {
+      "payout_batch_id": "PAYOUT-BATCH-12345"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_payout_item_details",
@@ -6282,7 +6842,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "payout_item_id"
+    ],
+    "example_call": {
+      "payout_item_id": "ITEM-CANCEL-12345"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_available_events",
@@ -6341,7 +6908,11 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "url",
+        "event_types"
+      ]
     },
     "example_request_body": {
       "url": "{{webhook_url}}",
@@ -6364,7 +6935,20 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "url",
+      "event_types"
+    ],
+    "example_call": {
+      "url": "https://example.com/webhook",
+      "event_types": [
+        {
+          "name": "*"
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_webhooks",
@@ -6399,7 +6983,10 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {},
+    "call_example_status": "ok"
   },
   {
     "name": "show_webhook_details",
@@ -6508,7 +7095,12 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "page_size": 10
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_event_subscriptions_for_webhook",
@@ -6625,7 +7217,13 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "id": "evnt_123456789",
+      "name": "Soccer Event"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "verify_webhook_signature",
@@ -6667,7 +7265,16 @@
           "type": "string",
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "webhook_id",
+        "transmission_id",
+        "transmission_time",
+        "cert_url",
+        "auth_algo",
+        "transmission_sig",
+        "webhook_event"
+      ]
     },
     "example_request_body": {
       "webhook_id": "{{webhook_id}}",
@@ -6691,7 +7298,26 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "webhook_id",
+      "transmission_id",
+      "transmission_time",
+      "cert_url",
+      "auth_algo",
+      "transmission_sig",
+      "webhook_event"
+    ],
+    "example_call": {
+      "webhook_id": "WH-1X23456789",
+      "transmission_id": "tx-98765",
+      "transmission_time": "2026-08-01T00:00:00Z",
+      "cert_url": "https://api.paypal.com/cert",
+      "auth_algo": "SHA256withRSA",
+      "transmission_sig": "sig_abc123",
+      "webhook_event": "{}"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "resend_event_notification",
@@ -6740,7 +7366,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "event_id"
+    ],
+    "example_call": {
+      "event_id": "EV-87654321"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "simulate_webhook_event",
@@ -6791,7 +7424,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "event_type": "CUSTOMER.DISPUTE.CREATED",
+      "webhook_id": "WH-1X23456789",
+      "url": "https://example.com/webhook"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "update_webhook",
@@ -6877,7 +7517,25 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "webhook_id"
+    ],
+    "example_call": {
+      "webhook_id": "WH-1X23456789",
+      "items": [
+        {
+          "op": "replace",
+          "path": "/event_types",
+          "value": [
+            {
+              "name": "CUSTOMER.DISPUTE.CREATED"
+            }
+          ]
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "delete_webhook",
@@ -6915,7 +7573,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "webhook_id"
+    ],
+    "example_call": {
+      "webhook_id": "WH-1X23456789"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "add_tracking_information_for_multiple_paypal_transactions",
@@ -6968,7 +7633,10 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "trackers"
+      ]
     },
     "example_request_body": {
       "trackers": [
@@ -6999,7 +7667,22 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "trackers"
+    ],
+    "example_call": {
+      "trackers": [
+        {
+          "transaction_id": "2GG279541U471931P",
+          "status": "SHIPPED",
+          "tracking_number": "1Z9999999999999999",
+          "carrier": "UPS",
+          "notify_buyer": true
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_tracking_information",
@@ -7100,7 +7783,18 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "tracking_id"
+    ],
+    "example_call": {
+      "tracking_id": "TRK-12345678",
+      "transaction_id": "2GG279541U471931P",
+      "tracking_number": "1Z9999999999999999",
+      "status": "SHIPPED",
+      "carrier": "UPS"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_transactions",
@@ -7204,7 +7898,16 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "start_date",
+      "end_date"
+    ],
+    "example_call": {
+      "start_date": "2026-08-01T00:00:00Z",
+      "end_date": "2026-08-02T00:00:00Z"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_all_balances",
@@ -7249,7 +7952,12 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "currency_code": "USD"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "create_currency_exchange_quote",
@@ -7281,7 +7989,10 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "quote_items"
+      ]
     },
     "example_request_body": {
       "quote_items": [
@@ -7305,7 +8016,20 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "quote_items"
+    ],
+    "example_call": {
+      "quote_items": [
+        {
+          "base_currency": "USD",
+          "base_amount": "20.00",
+          "quote_currency": "CAD"
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "get_currency_exchange_quote",
@@ -7408,7 +8132,12 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {
+      "page_size": 10
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "show_dispute_details",
@@ -7499,7 +8228,17 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "note": "Full refund to the customer.",
+      "accept_claim_reason": "DID_NOT_SHIP_ITEM",
+      "accept_claim_type": "REFUND"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "appeal_dispute",
@@ -7536,7 +8275,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "settle_dispute",
@@ -7579,7 +8325,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "adjudication_outcome": "BUYER_FAVOR"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "update_dispute_status",
@@ -7622,7 +8376,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "action": "BUYER_EVIDENCE"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "make_offer_to_resolve_dispute",
@@ -7686,7 +8448,20 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "note": "Offer refund with replacement item.",
+      "offer_amount": {
+        "currency_code": "USD",
+        "value": "23.00"
+      },
+      "offer_type": "REFUND_WITH_REPLACEMENT"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "provide_evidence",
@@ -7733,7 +8508,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "input": "Tracking info provided"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "acknowledge_returned_item",
@@ -7781,7 +8564,16 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "note": "I have received the item back.",
+      "acknowledgement_type": "ITEM_RECEIVED"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "provide_supporting_information_for_dispute",
@@ -7819,7 +8611,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "escalate_dispute_to_claim",
@@ -7863,7 +8662,15 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "note": "Escalating to PayPal claim for resolution."
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "accept_offer_to_resolve_dispute",
@@ -7887,7 +8694,8 @@
         }
       },
       "required": [
-        "dispute_id"
+        "dispute_id",
+        "note"
       ]
     },
     "example_request_body": {
@@ -7906,7 +8714,16 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id",
+      "note"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "note": "I am ok with the refund offered."
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "send_message_about_dispute_to_other_party",
@@ -7930,7 +8747,8 @@
         }
       },
       "required": [
-        "dispute_id"
+        "dispute_id",
+        "message"
       ]
     },
     "example_request_body": {
@@ -7950,7 +8768,16 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id",
+      "message"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "message": "Shipment is in progress."
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "deny_offer_to_resolve_dispute",
@@ -7974,7 +8801,8 @@
         }
       },
       "required": [
-        "dispute_id"
+        "dispute_id",
+        "note"
       ]
     },
     "example_request_body": {
@@ -7993,7 +8821,16 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id",
+      "note"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "note": "refund offer is very low."
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "partially_update_dispute",
@@ -8039,7 +8876,8 @@
         }
       },
       "required": [
-        "dispute_id"
+        "dispute_id",
+        "items"
       ]
     },
     "example_request_body": [
@@ -8065,7 +8903,25 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "dispute_id",
+      "items"
+    ],
+    "example_call": {
+      "dispute_id": "PP-D-27803",
+      "items": [
+        {
+          "op": "add",
+          "path": "/communication_details",
+          "value": {
+            "email": "merchant@example.com",
+            "note": "Please send a picture of items to the above email address."
+          }
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "create_managed_account",
@@ -8407,7 +9263,14 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "external_id",
+        "legal_country_code",
+        "organization",
+        "primary_currency_code",
+        "business_entity"
+      ]
     },
     "example_request_body": {
       "external_id": "EXT-{{$timestamp}}",
@@ -8618,7 +9481,36 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "external_id",
+      "legal_country_code",
+      "organization",
+      "primary_currency_code",
+      "business_entity"
+    ],
+    "example_call": {
+      "external_id": "EXT-12345678",
+      "legal_country_code": "US",
+      "organization": "MY_ORG",
+      "primary_currency_code": "USD",
+      "business_entity": {
+        "type": "CORPORATION",
+        "names": [
+          {
+            "business_name": "STARK INDUSTRY",
+            "type": "LEGAL"
+          }
+        ],
+        "registered_business_address": {
+          "address_line_1": "10880 Wilshire Blvd",
+          "admin_area_2": "Los Angeles",
+          "postal_code": "90024",
+          "country_code": "US"
+        }
+      }
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "search_managed_account_through_external_id",
@@ -8642,7 +9534,10 @@
           "x-in": "query",
           "description": "(Optional) The views query parameter can be used to request process_view in addition to the default GET response. A comma-separated list of data sets that should be returned in the response. The only allowed value here is process_view, which indicates that the process_view property should be populated in the response; this property contains information on the regulatory processes that must be completed for this merchant."
         }
-      }
+      },
+      "required": [
+        "external_id"
+      ]
     },
     "example_request_body": null,
     "action_type": "read",
@@ -8658,7 +9553,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "external_id"
+    ],
+    "example_call": {
+      "external_id": "EXT-12345678"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "search_managed_account_by_seller_id",
@@ -8701,7 +9603,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "id"
+    ],
+    "example_call": {
+      "id": "SELLER-ID-12345"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "partially_updates_information_for_a_managed_account",
@@ -8779,7 +9688,26 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "id"
+    ],
+    "example_call": {
+      "id": "SELLER-ID-12345",
+      "items": [
+        {
+          "op": "add",
+          "path": "/attributes",
+          "value": [
+            {
+              "name": "SELF_CERTIFICATION",
+              "value": "true"
+            }
+          ]
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "shows_collection_of_registered_wallet_domains",
@@ -8865,7 +9793,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "token"
+    ],
+    "example_call": {
+      "token": "123456ab-cdef-1234-abcd-123456789abc"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "create_a_setup_token",
@@ -8922,7 +9857,10 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "payment_source"
+      ]
     },
     "example_request_body": {
       "payment_source": {
@@ -8954,7 +9892,20 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "payment_source"
+    ],
+    "example_call": {
+      "payment_source": {
+        "card": {
+          "number": "4111111111111111",
+          "expiry": "2027-02",
+          "name": "John Doe"
+        }
+      }
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "retrieve_a_setup_token",
@@ -9022,7 +9973,10 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "payment_source"
+      ]
     },
     "example_request_body": {
       "payment_source": {
@@ -9045,7 +9999,19 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "payment_source"
+    ],
+    "example_call": {
+      "payment_source": {
+        "token": {
+          "id": "1M123456789012345",
+          "type": "SETUP_TOKEN"
+        }
+      }
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "retrieve_a_payment_token",
@@ -9119,7 +10085,14 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "payment_token_id"
+    ],
+    "example_call": {
+      "payment_token_id": "4V3904975G451933X"
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_all_payment_tokens_for_customer",
@@ -9168,7 +10141,10 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {},
+    "call_example_status": "ok"
   },
   {
     "name": "creates_a_payment_resource_for_a_single_item_purchase",
@@ -9221,7 +10197,11 @@
           },
           "x-in": "body"
         }
-      }
+      },
+      "required": [
+        "type",
+        "line_items"
+      ]
     },
     "example_request_body": {
       "type": "BUY_NOW",
@@ -9251,7 +10231,24 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "type",
+      "line_items"
+    ],
+    "example_call": {
+      "type": "BUY_NOW",
+      "line_items": [
+        {
+          "name": "Wireless Mouse",
+          "unit_amount": {
+            "currency_code": "USD",
+            "value": "50.00"
+          }
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "list_payment_resources",
@@ -9293,7 +10290,10 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": false,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [],
+    "example_call": {},
+    "call_example_status": "ok"
   },
   {
     "name": "retrieve_a_payment_resource",
@@ -9389,7 +10389,9 @@
         }
       },
       "required": [
-        "payment_resource_id"
+        "payment_resource_id",
+        "type",
+        "line_items"
       ]
     },
     "example_request_body": {
@@ -9420,7 +10422,26 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "payment_resource_id",
+      "type",
+      "line_items"
+    ],
+    "example_call": {
+      "payment_resource_id": "PR-1X234567890ABCDEF",
+      "type": "BUY_NOW",
+      "line_items": [
+        {
+          "name": "Wireless Mouse",
+          "unit_amount": {
+            "currency_code": "USD",
+            "value": "50.00"
+          }
+        }
+      ]
+    },
+    "call_example_status": "ok"
   },
   {
     "name": "delete_a_payment_resource",
@@ -9457,6 +10478,13 @@
     ],
     "enrichment_status": "ok",
     "requires_confirmation": true,
-    "eval_only": false
+    "eval_only": false,
+    "required_params": [
+      "payment_resource_id"
+    ],
+    "example_call": {
+      "payment_resource_id": "PR-1X234567890ABCDEF"
+    },
+    "call_example_status": "ok"
   }
 ]
