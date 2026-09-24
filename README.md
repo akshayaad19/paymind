@@ -461,7 +461,7 @@ Each record is one row holding PayPal-shaped JSON. You can open either file in a
 
 ### Step 5: The agent (in progress)
 
-Built in parts: **5a** app database ✅ · **5b** executor ✅ · 5c validator · 5d agent loop (LangGraph + Gemini) · 5e chat screen.
+Built in parts: **5a** app database ✅ · **5b** executor ✅ · **5c** validator ✅ · 5d agent loop (LangGraph + Gemini) · 5e chat screen.
 
 #### 5a: App database ✅
 
@@ -528,6 +528,39 @@ Result:    ok, and only 1 refund in the database. No double refund.
 
 The executor does no permission or safety checks; the validator (5c) runs before it.
 
+#### 5c: Validator ✅
+
+`src/paymind/agent/validator.py` decides whether a tool call suggested by the LLM may run. **The LLM suggests; plain code decides**: no LLM involved, so the same input always gives the same decision.
+
+```
+Gemini suggests: refund_captured_payment(capture_id="CAP-999", amount=40)
+                         ▼
+                     VALIDATOR
+   1. Tool allowed    exists? offered this turn? user's role may use it?
+   2. Parameters      required present? right types? no made-up parameters?
+   3. Business rules  amount > 0, max 2 decimals, USD only, valid emails
+   4. Grounding       every ID appeared in the chat or an earlier tool result?
+   5. Confirmation    write → ask the user; over $500 → stronger warning
+                         ▼
+   ok · needs_confirmation · invalid (LLM fixes and retries) · blocked (not allowed)
+```
+
+| Check | Example it catches | Outcome |
+|---|---|---|
+| 1. Role | A customer tries `refund_captured_payment` | `blocked` (second role check, after the search filter) |
+| 1. Offered | The LLM calls a tool that search didn't offer this turn | `invalid`: "use find_tools first" |
+| 2. Required | Refund without `capture_id` | `invalid`: "missing required parameter: capture_id" |
+| 2. Made-up parameter | `list_disputes(buyer="user_123")` (PayPal has no such filter) | `invalid`: "unknown parameter 'buyer'" |
+| 3. Business rules | Refund of −5, 5.001 or EUR | `invalid` with the reason |
+| 4. **Grounding** | `capture_id="CAP-999"` that never appeared anywhere | `invalid`: "not mentioned… look it up first" |
+| 5. Confirmation | Any write, e.g. a $40 refund | `needs_confirmation`: "Refund captured payment for 40 USD (capture_id=CAP123)?" |
+
+- **Obvious type slips are tidied, not rejected:** `40` → `"40"`, `49.5` → `"49.50"`, `"5"` → `5`, `"true"` → `true`. Real mistakes are still rejected.
+- Parameter checks come **automatically from each card's JSON Schema** (from the parser in step 1), so they work for all 112 tools; only the business rules are hand-written.
+- **All errors are reported together**, so the LLM can fix everything in one retry.
+- **Grounding** is what answers the brief's "hallucinate parameters": the LLM can't invent an ID, it has to look it up first.
+- Not here: **customer data scope** (a customer may only see *their own* records). That needs the actual PayPal data, so it's checked around the executor in 5d.
+
 ## Status
 
-Design complete; steps 1–4 done; step 5 (agent) in progress: 5a app database and 5b executor done, 5c validator next.
+Design complete; steps 1–4 done; step 5 (agent) in progress: 5a app database, 5b executor and 5c validator done; 5d agent loop next.
