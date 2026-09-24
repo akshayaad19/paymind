@@ -47,7 +47,21 @@ def test_initial_database_contents():
     conn = sqlite3.connect(INITIAL_DB)
     counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
               for t in ("customers", "captures", "refunds", "orders", "invoices", "disputes", "transactions")}
-    assert counts == {"customers": 6, "captures": 47, "refunds": 2, "orders": 2, "invoices": 8, "disputes": 4, "transactions": 49}
+    assert counts == {"customers": 6, "captures": 47, "refunds": 4, "orders": 2, "invoices": 8, "disputes": 4, "transactions": 51}
+
+
+def test_initial_data_is_consistent():
+    """No payment is refunded beyond its amount, and every refund has a matching ledger row."""
+    conn = sqlite3.connect(INITIAL_DB)
+    captures = {i: json.loads(d) for i, d in conn.execute("SELECT id, data FROM captures")}
+    refunds = [json.loads(d) for (d,) in conn.execute("SELECT data FROM refunds")]
+    ledger = {json.loads(d)["transaction_info"]["transaction_id"] for (d,) in conn.execute("SELECT data FROM transactions")}
+    for c in captures.values():
+        assert float(c["refunded_amount"]["value"]) <= float(c["amount"]["value"]), c["id"]
+    for r in refunds:
+        assert r["capture_id"] in captures and r["id"] in ledger
+        total = sum(float(x["amount"]["value"]) for x in refunds if x["capture_id"] == r["capture_id"])
+        assert abs(total - float(captures[r["capture_id"]]["refunded_amount"]["value"])) < 0.001
 
 
 def test_every_stateful_route_is_a_real_tool_path():
@@ -306,3 +320,11 @@ def test_initial_db_is_never_changed(app, client):
 def test_new_ids_are_unique(client):
     ids = {client.post("/v2/checkout/orders", json={"purchase_units": [{"amount": usd("5.00")}]}).json()["id"] for _ in range(20)}
     assert len(ids) == 20
+
+
+def test_reset_command_copies_initial_db_when_server_is_down(tmp_path):
+    from paymind.mock_paypal.reset import reset
+    working = tmp_path / "paypal_mock.db"
+    working.write_bytes(b"changed")
+    message = reset("http://127.0.0.1:9", working_db=working)  # nothing listens on port 9
+    assert "copied" in message and working.read_bytes() == INITIAL_DB.read_bytes()

@@ -1,19 +1,21 @@
 // PayMind web app. Talks to the PayMind API with a JWT in the Authorization header.
-// The token lives in sessionStorage (this tab only; gone when the tab closes).
-// All permissions are enforced by the server; this page only decides what to show.
+// The token is kept only in memory: refreshing or closing the page logs you out,
+// so users log in every time. All permissions are enforced by the server; this
+// page only decides what to show.
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
-const TOKEN_KEY = "paymind.token";
-const USER_KEY = "paymind.user";
 
 const state = {
-  token: sessionStorage.getItem(TOKEN_KEY),
-  user: JSON.parse(sessionStorage.getItem(USER_KEY) || "null"),
+  token: null,
+  user: null,
   sessionId: null,
   busy: false,
   data: null,
   dataTab: null,
+  txPeriod: "month",
+  txAnchor: new Date(),
+  tx: null,
 };
 
 // ---------------------------------------------------------------- helpers
@@ -65,11 +67,6 @@ async function api(path, options = {}) {
   return body;
 }
 
-function tokenExpiry() {
-  try { return new Date(JSON.parse(atob(state.token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).exp * 1000); }
-  catch { return null; }
-}
-
 // ---------------------------------------------------------------- auth
 
 async function login(email, password) {
@@ -79,8 +76,6 @@ async function login(email, password) {
     const res = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password }) });
     state.token = res.access_token;
     state.user = res.user;
-    sessionStorage.setItem(TOKEN_KEY, state.token);
-    sessionStorage.setItem(USER_KEY, JSON.stringify(state.user));
     showApp();
   } catch (err) {
     $("#login-error").textContent = err.message;
@@ -92,8 +87,6 @@ async function login(email, password) {
 
 function logout(message) {
   state.token = null; state.user = null; state.sessionId = null; state.data = null;
-  sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(USER_KEY);
   $("#app-view").hidden = true;
   $("#login-view").hidden = false;
   if (message) { $("#login-error").textContent = message; $("#login-error").hidden = false; }
@@ -101,19 +94,14 @@ function logout(message) {
 
 const SUGGESTIONS = {
   accountant: [
-    "Is there a dispute open from user_123?",
-    "What was my total sales volume last month?",
-    "Send an invoice for $50 to john@x.com for 1 hour of consulting",
-    "Which invoices are still unpaid?",
-    "What can you do with invoices?",
-    "What's the status of my last request?",
+    "Show open disputes",
+    "Which invoices are unpaid?",
+    "How were sales this month?",
+    "Create an invoice",
   ],
   customer: [
-    "Show my open disputes",
-    "Do I have any unpaid invoices?",
-    "Send a message on my dispute saying I still haven't received the item",
-    "Refund my last payment",
-    "What can you help me with?",
+    "Show my disputes",
+    "Do I have unpaid invoices?",
   ],
 };
 
@@ -126,13 +114,9 @@ function showApp() {
   $("#user-role").textContent = u.role;
   $("#user-role").className = `badge ${u.role}`;
   $("#user-payer").textContent = u.payer_id ? `· ${u.payer_id}` : "";
-  const exp = tokenExpiry();
-  $("#token-note").textContent = exp ? `Signed in with a JWT · expires ${exp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "";
   $("#suggestions").innerHTML = SUGGESTIONS[u.role].map((s) => `<li>${esc(s)}</li>`).join("");
-  $("#data-reset").hidden = u.role !== "accountant";
   newChat();
   switchTab("chat");
-  refreshStatus();
 }
 
 // ---------------------------------------------------------------- tabs
@@ -182,7 +166,6 @@ function renderReply(res) {
   }
   const failed = /can't reach the AI model/.test(res.reply || "");
   addMessage("bot", md(res.reply || "(no answer)"), failed ? "error" : "");
-  if (failed) markStatus("llm", "warn");
 }
 
 async function withTyping(promise) {
@@ -245,7 +228,7 @@ const DATA_VIEWS = {
       money(i.amount), money(i.due_amount), esc(i.detail?.invoice_date)],
   },
   transactions: {
-    label: "Transactions (30 days)",
+    label: "Transactions",
     head: ["Transaction", "Type", "Customer", "Amount", "Fee", "Date"],
     row: (t) => { const i = t.transaction_info, p = t.payer_info || {}; const neg = Number(i.transaction_amount.value) < 0;
       return [`<code>${esc(i.transaction_id)}</code>`, badge(i.transaction_event_code === "T1107" ? "refund" : "sale", i.transaction_event_code === "T1107" ? "declined" : "ok"),
@@ -268,27 +251,92 @@ async function loadData() {
   if (d.role === "accountant") {
     const sales = d.transactions.filter((t) => t.transaction_info.transaction_event_code === "T0006")
       .reduce((s, t) => s + Number(t.transaction_info.transaction_amount.value), 0);
-    $("#data-sub").textContent = "The whole shop account, read through the same PayPal APIs the agent uses.";
+    $("#data-sub").textContent = "Your shop's account at a glance: balance, sales, disputes and invoices.";
     $("#stats").innerHTML = [
       ["Balance", money(d.balance)], ["Sales, last 30 days", money({ value: sales })],
       ["Open disputes", open], ["Unpaid invoices", unpaid.length],
     ].map(([l, v]) => `<div class="stat"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
   } else {
-    $("#data-sub").textContent = `Only your own records (${state.user.payer_id}). Other customers' data is filtered out by the server.`;
+    $("#data-sub").textContent = "Your disputes and invoices with this shop.";
     $("#stats").innerHTML = [["My open disputes", open], ["My unpaid invoices", unpaid.length]]
       .map(([l, v]) => `<div class="stat"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
   }
   const views = Object.keys(DATA_VIEWS).filter((k) => Array.isArray(d[k]));
   if (!views.includes(state.dataTab)) state.dataTab = views[0];
-  $("#data-subtabs").innerHTML = views.map((k) => `<button data-view="${k}" class="${k === state.dataTab ? "on" : ""}">${DATA_VIEWS[k].label} · ${d[k].length}</button>`).join("");
+  $("#data-subtabs").innerHTML = views.map((k) => `<button data-view="${k}" class="${k === state.dataTab ? "on" : ""}">${DATA_VIEWS[k].label}${k === "transactions" ? "" : ` · ${d[k].length}`}</button>`).join("");
   renderDataTable();
 }
 
-function renderDataTable() {
-  const view = DATA_VIEWS[state.dataTab], rows = state.data[state.dataTab];
+// ---------- transactions: day / week / month in the user's local time ----------
+
+function periodRange(period, anchor) {
+  const a = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
+  let start, end;
+  if (period === "day") { start = a; end = new Date(a); end.setDate(a.getDate() + 1); }
+  else if (period === "week") { start = new Date(a); start.setDate(a.getDate() - ((a.getDay() + 6) % 7)); end = new Date(start); end.setDate(start.getDate() + 7); }
+  else { start = new Date(a.getFullYear(), a.getMonth(), 1); end = new Date(a.getFullYear(), a.getMonth() + 1, 1); }
+  return { start, end: new Date(end.getTime() - 1000) };  // end = last second of the period
+}
+
+function periodLabel(period, { start, end }) {
+  const d = (x, o) => x.toLocaleDateString(undefined, o);
+  if (period === "day") return d(start, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+  if (period === "week") return `${d(start, { day: "numeric", month: "short" })} – ${d(end, { day: "numeric", month: "short", year: "numeric" })}`;
+  return d(start, { month: "long", year: "numeric" });
+}
+
+function localIso(date) {  // 2026-09-01T00:00:00+05:30
+  const pad = (n) => String(Math.abs(n)).padStart(2, "0");
+  const off = -date.getTimezoneOffset();
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}` +
+    `${off >= 0 ? "+" : "-"}${pad(Math.floor(Math.abs(off) / 60))}:${pad(Math.abs(off) % 60)}`;
+}
+
+function shiftPeriod(step) {
+  const a = new Date(state.txAnchor);
+  if (state.txPeriod === "day") a.setDate(a.getDate() + step);
+  else if (state.txPeriod === "week") a.setDate(a.getDate() + 7 * step);
+  else a.setMonth(a.getMonth() + step, 1);
+  state.txAnchor = a;
+  loadTransactions();
+}
+
+async function loadTransactions() {
+  const range = periodRange(state.txPeriod, state.txAnchor);
+  $("#tx-label").textContent = periodLabel(state.txPeriod, range);
+  $$("#tx-period button").forEach((b) => b.classList.toggle("on", b.dataset.period === state.txPeriod));
+  $("#tx-next").disabled = range.end >= new Date();  // nothing in the future
+  $("#data-table").innerHTML = `<tr><td class="empty-row">Loading…</td></tr>`;
+  try {
+    state.tx = await api(`/api/paypal/transactions?start=${encodeURIComponent(localIso(range.start))}&end=${encodeURIComponent(localIso(range.end))}`);
+  } catch (err) {
+    if (err.message !== "unauthorized") $("#data-table").innerHTML = `<tr><td class="empty-row">${esc(err.message)}</td></tr>`;
+    return;
+  }
+  const t = state.tx.totals;
+  $("#tx-totals").innerHTML = [
+    ["Sales", `<span class="amount-pos">${money({ value: t.sales })}</span>`],
+    ["Refunds", `<span class="amount-neg">${money({ value: t.refunds })}</span>`],
+    ["Fees", money({ value: t.fees })],
+    ["Net", money({ value: t.net })],
+    ["Transactions", t.count],
+  ].map(([l, v]) => `<span class="chip">${l}<b>${v}</b></span>`).join("");
+  renderRows(DATA_VIEWS.transactions, state.tx.transactions, "No transactions in this period.");
+}
+
+function renderRows(view, rows, emptyText = "Nothing here.") {
   $("#data-table").innerHTML = `<tr>${view.head.map((h) => `<th>${h}</th>`).join("")}</tr>` +
     (rows.map((r) => `<tr>${view.row(r).map((c) => `<td>${c}</td>`).join("")}</tr>`).join("") ||
-      `<tr><td class="empty-row" colspan="${view.head.length}">Nothing here.</td></tr>`);
+      `<tr><td class="empty-row" colspan="${view.head.length}">${emptyText}</td></tr>`);
+}
+
+function renderDataTable() {
+  const isTx = state.dataTab === "transactions";
+  $("#tx-toolbar").hidden = !isTx;
+  $("#tx-totals").hidden = !isTx;
+  if (isTx) return loadTransactions();
+  const view = DATA_VIEWS[state.dataTab], rows = state.data[state.dataTab];
+  renderRows(view, rows);
 }
 
 // ---------------------------------------------------------------- audit
@@ -308,24 +356,6 @@ async function loadAudit() {
   }
 }
 
-// ---------------------------------------------------------------- status
-
-function markStatus(key, kind) {
-  const li = $(`#status li[data-key="${key}"]`);
-  if (li) li.className = kind;
-}
-
-async function refreshStatus() {
-  try {
-    const s = await api("/api/health");
-    for (const [key, v] of Object.entries(s)) {
-      markStatus(key, v.ok ? "ok" : key === "llm" ? "warn" : "bad");
-      const li = $(`#status li[data-key="${key}"]`);
-      if (li) li.title = v.detail;
-    }
-  } catch { /* shown by other errors */ }
-}
-
 // ---------------------------------------------------------------- wiring
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -336,11 +366,6 @@ document.addEventListener("DOMContentLoaded", () => {
   document.body.append(tpl);
 
   $("#login-form").addEventListener("submit", (e) => { e.preventDefault(); login($("#login-email").value, $("#login-password").value); });
-  $$(".demo").forEach((b) => b.addEventListener("click", () => {
-    $("#login-email").value = b.dataset.email;
-    $("#login-password").value = b.dataset.password;
-    login(b.dataset.email, b.dataset.password);
-  }));
   $("#logout").addEventListener("click", () => logout());
   $("#new-chat").addEventListener("click", () => { newChat(); switchTab("chat"); });
   $$(".tab").forEach((t) => t.addEventListener("click", () => switchTab(t.dataset.tab)));
@@ -357,26 +382,11 @@ document.addEventListener("DOMContentLoaded", () => {
     $$("#data-subtabs button").forEach((b) => b.classList.toggle("on", b.dataset.view === state.dataTab));
     renderDataTable();
   });
-  $("#data-reset").addEventListener("click", async () => {
-    if (!confirmReset()) return;
-    try { await api("/api/paypal/reset", { method: "POST" }); toast("Demo data restored to the start."); loadData(); }
-    catch (err) { if (err.message !== "unauthorized") toast(err.message); }
-  });
   $("#audit-refresh").addEventListener("click", loadAudit);
+  $$("#tx-period button").forEach((b) => b.addEventListener("click", () => { state.txPeriod = b.dataset.period; state.txAnchor = new Date(); loadTransactions(); }));
+  $("#tx-prev").addEventListener("click", () => shiftPeriod(-1));
+  $("#tx-next").addEventListener("click", () => shiftPeriod(1));
+  $("#tx-today").addEventListener("click", () => { state.txAnchor = new Date(); loadTransactions(); });
 
-  if (state.token && state.user) {
-    api("/api/me").then((u) => { state.user = u; showApp(); }).catch(() => logout());
-  } else {
-    $("#login-view").hidden = false;
-  }
+  $("#login-view").hidden = false;  // always start at login
 });
-
-// A second click within 4 seconds confirms the reset (no browser pop-ups).
-function confirmReset() {
-  const btn = $("#data-reset");
-  if (btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = "Reset demo data"; return true; }
-  btn.dataset.armed = "1";
-  btn.textContent = "Click again to reset";
-  setTimeout(() => { delete btn.dataset.armed; btn.textContent = "Reset demo data"; }, 4000);
-  return false;
-}

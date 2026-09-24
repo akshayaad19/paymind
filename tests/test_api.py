@@ -117,9 +117,10 @@ def test_role_comes_from_the_database_not_the_token(setup):
 
 # ---- role checks ---------------------------------------------------------------------------------
 
-def test_only_accountants_can_reset_demo_data(setup):
+def test_demo_reset_is_not_in_the_app(setup):
+    """Resetting demo data is a developer command (python -m paymind.mock_paypal.reset), not an app feature."""
     client, _, _ = setup
-    assert client.post("/api/paypal/reset", headers=login(client, "rahul")).status_code == 403
+    assert client.post("/api/paypal/reset", headers=login(client, "asha")).status_code in (404, 405)
 
 
 # ---- data scoping ----------------------------------------------------------------------------------
@@ -184,3 +185,45 @@ def test_tool_search_is_not_exposed_to_users(setup):
     """Which tools were picked is developer information: it lives in tracing, not in the app."""
     client, _, _ = setup
     assert client.get("/api/tools/search?q=refund", headers=login(client, "asha")).status_code == 404
+
+
+def test_system_status_is_not_exposed_to_users(setup):
+    """System health is developer information: it's in LangSmith (traces, errors, monitoring)."""
+    client, _, _ = setup
+    assert client.get("/api/health", headers=login(client, "asha")).status_code == 404
+
+
+# ---- transactions by period -------------------------------------------------------------------------
+
+def tx(client, headers, start, end):
+    return client.get("/api/paypal/transactions", params={"start": start, "end": end}, headers=headers)
+
+
+def test_transactions_for_a_month_with_totals(setup):
+    client, _, _ = setup
+    r = tx(client, login(client, "asha"), "2026-09-01T00:00:00+05:30", "2026-09-30T23:59:59+05:30").json()
+    t = r["totals"]
+    kinds = [row["transaction_info"]["transaction_event_code"] for row in r["transactions"]]
+    assert t["count"] == len(kinds) and "T1107" in kinds and "T0006" in kinds  # sales and the recent refunds
+    assert t["refunds"] < 0 < t["sales"]
+    assert t["net"] == round(t["sales"] + t["refunds"] + t["fees"], 2)
+    dates = [row["transaction_info"]["transaction_initiation_date"] for row in r["transactions"]]
+    assert dates == sorted(dates, reverse=True)  # newest first
+
+
+def test_transactions_for_a_single_day(setup):
+    client, _, _ = setup
+    asha = login(client, "asha")
+    day = tx(client, asha, "2026-09-18T00:00:00+05:30", "2026-09-18T23:59:59+05:30").json()
+    assert all(row["transaction_info"]["transaction_initiation_date"].startswith(("2026-09-17T18", "2026-09-17T19", "2026-09-17T2", "2026-09-18"))
+               for row in day["transactions"])
+    assert any(row["transaction_info"]["transaction_event_code"] == "T1107" for row in day["transactions"])  # the 18 Sep refund
+
+
+def test_transactions_rules(setup):
+    client, _, _ = setup
+    asha = login(client, "asha")
+    assert tx(client, asha, "2026-06-01T00:00:00+05:30", "2026-09-01T00:00:00+05:30").status_code == 400  # > 31 days
+    assert tx(client, asha, "2026-09-10T00:00:00+05:30", "2026-09-01T00:00:00+05:30").status_code == 400  # end before start
+    assert tx(client, asha, "2026-09-01T00:00:00", "2026-09-02T00:00:00").status_code == 400             # no time zone
+    assert tx(client, login(client, "rahul"), "2026-09-01T00:00:00+05:30", "2026-09-02T00:00:00+05:30").status_code == 403

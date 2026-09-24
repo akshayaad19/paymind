@@ -76,8 +76,6 @@ code, .mono { font-family: var(--mono); font-size: 13px; }
 .btn-primary:hover:not(:disabled) { background: var(--primary-2); }
 .btn-ghost { background: transparent; border-color: var(--border); color: var(--text); }
 .btn-ghost:hover { background: var(--surface-2); }
-.btn-danger-ghost { background: transparent; border-color: var(--border); color: var(--bad); }
-.btn-danger-ghost:hover { background: var(--bad-soft); }
 .btn-ok { background: var(--ok); color: #fff; }
 .btn-block { width: 100%; }
 input, textarea {
@@ -100,15 +98,6 @@ label input { margin-top: 6px; font-weight: 400; }
 }
 .login-card > .muted { text-align: center; margin: 8px 0 24px; }
 .form-error { color: var(--bad); background: var(--bad-soft); padding: 8px 12px; border-radius: 8px; font-size: 14px; }
-.divider { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; margin: 22px 0 12px; }
-.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
-.demo-accounts { display: grid; gap: 8px; }
-.demo {
-  display: flex; align-items: center; gap: 12px; text-align: left; font: inherit; color: var(--text);
-  background: var(--surface-2); border: 1px solid var(--border); border-radius: 12px; padding: 10px 12px; cursor: pointer;
-}
-.demo:hover { border-color: var(--primary); }
-.demo small { display: block; color: var(--muted); font-size: 12px; }
 .avatar {
   flex: none; display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
   background: var(--primary-soft); color: var(--primary); font-weight: 700;
@@ -123,7 +112,6 @@ label input { margin-top: 6px; font-weight: 400; }
 .user-card { display: flex; align-items: center; gap: 10px; padding: 12px; background: var(--surface-2); border-radius: 12px; }
 .user-name { font-weight: 700; }
 .user-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-.token-note { font-size: 12px; margin: -8px 4px 0; }
 .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
 .badge.accountant, .badge.write { background: var(--primary-soft); color: var(--primary); }
 .badge.customer, .badge.read { background: var(--ok-soft); color: var(--ok); }
@@ -137,12 +125,6 @@ label input { margin-top: 6px; font-weight: 400; }
   padding: 8px 10px; border-radius: 10px; border: 1px solid var(--border); cursor: pointer; font-size: 13px; line-height: 1.35;
 }
 .suggestions li:hover { border-color: var(--primary); background: var(--primary-soft); }
-.status { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 13px; }
-.status li { display: flex; align-items: center; gap: 8px; }
-.status i { width: 8px; height: 8px; border-radius: 50%; background: var(--border); }
-.status li.ok i { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
-.status li.bad i { background: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
-.status li.warn i { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .logout { margin-top: auto; }
 
 .main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
@@ -200,6 +182,17 @@ td .desc { color: var(--muted); font-size: 13px; }
 .subtabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
 .subtabs button { font: inherit; font-size: 13px; font-weight: 600; border: 1px solid var(--border); background: var(--surface); color: var(--muted); padding: 6px 12px; border-radius: 999px; cursor: pointer; }
 .subtabs button.on { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); }
+.tx-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.seg button { font: inherit; font-size: 13px; font-weight: 600; border: none; background: var(--surface); color: var(--muted); padding: 7px 14px; cursor: pointer; }
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button.on { background: var(--primary-soft); color: var(--primary); }
+.tx-nav { display: flex; align-items: center; gap: 6px; }
+.tx-label { min-width: 170px; text-align: center; font-weight: 700; }
+.btn-icon { padding: 6px 10px; }
+.tx-totals { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.chip { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.chip b { margin-left: 4px; }
 .amount-neg { color: var(--bad); }
 .amount-pos { color: var(--ok); }
 

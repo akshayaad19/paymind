@@ -419,11 +419,11 @@ data/mock/paypal_mock.db   working database the server reads and writes (git-ign
 |---|---|---|
 | `customers` | 6 | including **user_123** (Rahul Sharma) and **john@x.com** |
 | `captures` | 47 | payments from mid-July to 23 Sep 2026 |
-| `refunds` | 2 | one partial, one full |
+| `refunds` | 4 | two older (Aug) and two recent (Sep): a full and a partial refund each time |
 | `invoices` | 8 | 2 draft, 3 sent (one overdue), 2 paid, 1 cancelled |
 | `disputes` | 4 | **user_123, $40, waiting for our response**; one under PayPal review; one waiting for the buyer to answer our offer; one resolved |
 | `orders` | 2 | one created, one completed |
-| `transactions` | 49 | the ledger behind transaction search and the balance |
+| `transactions` | 51 | the ledger behind transaction search and the balance (47 sales, 4 refunds) |
 | `meta` | | merchant details, starting balance, next invoice number |
 | `idempotency` | | remembered answers for `PayPal-Request-Id` retries |
 
@@ -432,7 +432,7 @@ Each record is one row holding PayPal-shaped JSON. You can open either file in a
 - **Changes survive restarts.** Refund a payment, restart the server: it's still refunded and the balance is still lower.
 - **One transaction per request.** A refund updates the payment, adds the refund and adds the ledger row all together or not at all. A failed request (400/404/422) writes nothing.
 - **New records use the real current time** and random PayPal-style IDs checked for uniqueness.
-- **To change the starting data**, edit `initial.db` and run `POST /mock/reset`.
+- **To change the starting data**, edit `initial.db` and run `.venv/bin/python -m paymind.mock_paypal.reset`.
 - The starting data covers July–September 2026. Questions like "sales last month" are answered from those dates.
 
 **Realistic rules and errors** (PayPal's error format: `name`, `message`, `details[].issue`)
@@ -456,7 +456,8 @@ Each record is one row holding PayPal-shaped JSON. You can open either file in a
 .venv/bin/uvicorn paymind.mock_paypal.app:create_app --factory --port 8000
 # interactive API docs: http://localhost:8000/docs
 # overview of the data:  http://localhost:8000/mock/summary
-# back to the starting data: curl -X POST http://localhost:8000/mock/reset
+# back to the starting data (developer command, not in the app):
+.venv/bin/python -m paymind.mock_paypal.reset
 ```
 
 ### Step 5: The agent (in progress)
@@ -624,10 +625,9 @@ Browser                                    PayMind API (FastAPI, port 8001)
   POST /api/auth/login  email + password ──► scrypt hash check → JWT (HS256, 8 h)
   every request: Authorization: Bearer … ──► verify signature + expiry → load user → check role
                                               ├── POST /api/chat, /api/chat/confirm → agent (5d)
-                                              ├── GET  /api/paypal/overview         → PayPal data, scoped by role
-                                              ├── POST /api/paypal/reset            → accountants only
-                                              ├── GET  /api/audit                   → caller's own log
-                                              └── GET  /api/health                  → PayPal / search / Gemini status
+                                              ├── GET  /api/paypal/overview         → account data, scoped by role
+                                              ├── GET  /api/paypal/transactions     → accountants: a day / week / month, with totals
+                                              └── GET  /api/audit                   → caller's own log
 ```
 
 **Auth**
@@ -635,12 +635,12 @@ Browser                                    PayMind API (FastAPI, port 8001)
 | | How |
 |---|---|
 | Passwords | Stored only as salted **scrypt** hashes (`users.password_hash`). A wrong email and a wrong password look identical and take the same time |
-| Token | **JWT** signed with `JWT_SECRET` from `.env`: `sub` (user), `role`, `name`, `iat`, `exp` (8 h), `iss`. Kept in the tab's sessionStorage |
+| Token | **JWT** signed with `JWT_SECRET` from `.env`: `sub` (user), `role`, `name`, `iat`, `exp` (8 h), `iss`. Kept **only in page memory** (never in browser storage): refreshing or closing the page logs you out, so users log in every time. The 8-hour expiry still caps how long a token works |
 | Every request | Signature and expiry verified; the **role is read from the database**, not trusted from the token |
-| Role checks | Enforced on the server: customers get only their own disputes/invoices and no balance or transactions; only accountants can reset demo data (403 otherwise) |
+| Role checks | Enforced on the server: customers get only their own disputes/invoices and no balance or transactions |
 | Chat privacy | Conversations are stored per user (`<user_id>__<session>`), so the same session id from two users is two separate chats |
 
-Tested: login, wrong password, no token, expired token, **forged token** (signed with another key), role-from-database, 403s, customer scoping, private chat threads.
+Tested: login, wrong password, no token, expired token, **forged token** (signed with another key), role-from-database, customer scoping, private chat threads, and that developer-only features (tool search, health, demo reset) are not reachable from the app.
 
 **Demo logins**
 
@@ -651,13 +651,13 @@ Tested: login, wrong password, no token, expired token, **forged token** (signed
 | Priya Nair | priya.nair@example.com | priya-demo-123 | customer (user_456) |
 
 **The page**
-- **Login**: email + password, or one click on a demo account.
+- **Login**: email + password, every time (the token is never stored in the browser).
 - **💬 Chat**: suggestions per role, a typing indicator, and **Yes / No buttons** when an action needs confirmation (large amounts are flagged). If Gemini is down, a clear "nothing was done, try again" message.
-- **🏦 PayPal data**: accountants see the balance, 30-day sales, open disputes, unpaid invoices, and tables of disputes, invoices and transactions; customers see only their own disputes and invoices.
+- **🏦 PayMind data**: accountants see the balance, 30-day sales, open disputes, unpaid invoices, and tables of disputes, invoices and transactions. Transactions can be viewed by **day, week or month** (in the user's local time) with ◀ ▶ navigation and totals for the period (sales, refunds, fees, net); the server checks the role and PayPal's 31-day limit. Customers see only their own disputes and invoices.
 - **📜 Audit log**: the user's own actions.
-- **Sidebar**: who's logged in, their role, when the token expires, and status lights for PayPal, search and Gemini.
+- **Sidebar**: who's logged in, their role, and suggested questions for that role (short, general starters).
 
-Internal details (which tools search picked, the tools the agent called and their arguments) are **not shown in the app**. They belong in observability.
+Internal details (which tools search picked, the tools the agent called and their arguments, system status) are **not shown in the app**. They belong in observability: LangSmith shows every step, failed Gemini or PayPal calls as red error steps, and error rate and latency over time in its Monitoring tab.
 
 **LangSmith tracing** (`LANGSMITH_TRACING=true`, `LANGSMITH_API_KEY`, `LANGSMITH_PROJECT=paymind` in `.env`). Every chat is one trace, tagged with user, role and session:
 

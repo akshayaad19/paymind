@@ -8,9 +8,8 @@ checked on the server for every call; the web page only decides what to show.
   POST /api/chat                send a message to the agent
   POST /api/chat/confirm        answer a pending yes/no
   GET  /api/paypal/overview     account data: everything for accountants, own records for customers
-  POST /api/paypal/reset        accountant only: restore the mock's starting data
+  GET  /api/paypal/transactions accountant only: transactions for a day / week / month, with totals
   GET  /api/audit               the caller's own audit log
-  GET  /api/health              status of mock PayPal, Qdrant and Gemini
 
 Run (mock PayPal must be running on port 8000):
     uvicorn paymind.api.server:create_app --factory --port 8001
@@ -27,7 +26,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -161,39 +159,44 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         return {"role": "accountant", "balance": balance, "disputes": disputes, "invoices": invoices,
                 "transactions": list(reversed(tx))}
 
-    @app.post("/api/paypal/reset", tags=["paypal"])
-    def reset(user: User = Depends(require_role("accountant"))):
-        r = httpx.post(f"{services.mock_base_url}/mock/reset", timeout=10)
-        r.raise_for_status()
-        return {"status": "reset"}
+    @app.get("/api/paypal/transactions", tags=["paypal"])
+    def transactions(start: datetime, end: datetime, user: User = Depends(require_role("accountant"))):
+        """Transactions between start and end (the page sends the user's local day / week / month),
+        with totals. PayPal allows at most 31 days per search."""
+        if start.tzinfo is None or end.tzinfo is None:
+            raise HTTPException(400, "start and end need a time zone, e.g. 2026-09-01T00:00:00+05:30.")
+        if end <= start or end - start > timedelta(days=31, seconds=1):
+            raise HTTPException(400, "Pick a period of up to 31 days.")
+        fmt = "%Y-%m-%dT%H:%M:%SZ"
+        rows = call("list_transactions", {"start_date": start.astimezone(timezone.utc).strftime(fmt),
+                                          "end_date": end.astimezone(timezone.utc).strftime(fmt), "page_size": 500},
+                    user)["transaction_details"]
+        sales = sum(float(r["transaction_info"]["transaction_amount"]["value"]) for r in rows
+                    if r["transaction_info"]["transaction_event_code"] == "T0006")
+        refunds = sum(float(r["transaction_info"]["transaction_amount"]["value"]) for r in rows
+                      if r["transaction_info"]["transaction_event_code"] == "T1107")
+        fees = sum(float(r["transaction_info"]["fee_amount"]["value"]) for r in rows)
+        return {"start": start.isoformat(), "end": end.isoformat(), "transactions": list(reversed(rows)),
+                "totals": {"count": len(rows), "sales": round(sales, 2), "refunds": round(refunds, 2),
+                           "fees": round(fees, 2), "net": round(sales + refunds + fees, 2)}}
 
-    # ---- audit + health --------------------------------------------------------------------------
+    # ---- audit --------------------------------------------------------------------------
 
     @app.get("/api/audit", tags=["audit"])
     def audit(limit: int = 50, user: User = Depends(current_user)):
         return {"items": services.appdb.recent_actions(user.user_id, limit=limit)}
 
-    @app.get("/api/health", tags=["health"])
-    def health(user: User = Depends(current_user)):
-        status: dict[str, dict] = {}
-        try:
-            httpx.get(f"{services.mock_base_url}/mock/summary", timeout=3).raise_for_status()
-            status["paypal"] = {"ok": True, "detail": services.mock_base_url}
-        except Exception as exc:
-            status["paypal"] = {"ok": False, "detail": f"mock PayPal not reachable ({type(exc).__name__})"}
-        try:
-            services.search("health check", role=user.role, k=1)
-            status["search"] = {"ok": True, "detail": "Qdrant"}
-        except Exception as exc:
-            status["search"] = {"ok": False, "detail": f"{type(exc).__name__}"}
-        agent = services._agent
-        errors = getattr(getattr(agent, "deps", None), "llm_errors", []) if agent else []
-        status["llm"] = {"ok": not errors, "detail": "Gemini" if not errors else "busy or out of quota recently"}
-        return status
-
     # ---- web page ---------------------------------------------------------------------------------
 
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+    @app.middleware("http")
+    async def no_cache_for_the_page(request: Request, call_next):
+        """Always load the latest page, script and styles (a normal refresh shows changes)."""
+        response = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     @app.get("/", include_in_schema=False)
     def index():
