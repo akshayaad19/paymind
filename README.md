@@ -461,7 +461,7 @@ Each record is one row holding PayPal-shaped JSON. You can open either file in a
 
 ### Step 5: The agent (in progress)
 
-Built in parts: **5a** app database ✅ · 5b executor · 5c validator · 5d agent loop (LangGraph + Gemini) · 5e chat screen.
+Built in parts: **5a** app database ✅ · **5b** executor ✅ · 5c validator · 5d agent loop (LangGraph + Gemini) · 5e chat screen.
 
 #### 5a: App database ✅
 
@@ -494,6 +494,40 @@ A customer **must** be linked to their PayPal `payer_id` (checked in code and by
 - Reading the log is **always scoped to one user** with **fixed filters only** (tool, status, since, limit), no free-form SQL. Rahul can never read Asha's history.
 - Records actions only; login/logout tracking is decided with the chat screen (5e).
 
+#### 5b: Executor ✅
+
+`src/paymind/agent/executor.py` turns a tool call into a real HTTP request and sends it to PayPal (the mock by default; `PAYPAL_BASE_URL` switches it).
+
+```
+refund_captured_payment(capture_id="ABC", amount={"currency_code": "USD", "value": "5.00"})
+   │  look up the card in tools.json; each parameter's "x-in" says where it goes
+   ▼
+POST http://localhost:8000/v2/payments/captures/ABC/refund
+     body: {"amount": {...}}
+     PayPal-Request-Id: pm-...    (write tools only; the SAME id on every retry)
+```
+
+| Situation | What the executor does |
+|---|---|
+| Parameter with `x-in: path` / `query` / `body` | Puts it in the URL path (escaped), the query string or the JSON body. GET and DELETE send no body |
+| Write tool | Adds a `PayPal-Request-Id`, reused on every retry of that action |
+| Timeout, connection error, 429, 5xx | Retries up to 3 more times, waiting 1s → 2s → 4s |
+| 4xx (bad request, not found, business rule) | **No retry**; PayPal's error becomes one sentence, e.g. `422 REFUND_AMOUNT_EXCEEDED: Refund of 99999 is more than the 32.00 left to refund. (field: amount.value)` |
+| No answer after all retries | `ok=False`: "PayPal did not respond… The action may or may not have happened." |
+
+It returns an `ExecutionResult`: `ok`, `status_code`, `body`, `error`, `attempts`, `request_id`, `replayed`.
+
+**Tested live: the "it worked but timed out" case**
+```
+Attempt 1: refund sent (id pm-dad14a…) → the server DOES the refund but answers 10s late
+           → executor stops waiting after 2s (timeout)
+wait 1s
+Attempt 2: same refund, SAME id → server: "already done, here's the same result" (replayed)
+Result:    ok, and only 1 refund in the database. No double refund.
+```
+
+The executor does no permission or safety checks; the validator (5c) runs before it.
+
 ## Status
 
-Design complete; steps 1–4 done; step 5 (agent) in progress: 5a app database done, 5b executor next.
+Design complete; steps 1–4 done; step 5 (agent) in progress: 5a app database and 5b executor done, 5c validator next.
