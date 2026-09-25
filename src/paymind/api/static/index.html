@@ -51,6 +51,7 @@
     <nav class="tabs" role="tablist">
       <button class="tab active" data-tab="chat">💬 Chat</button>
       <button class="tab" data-tab="data">🏦 PayMind data</button>
+      <button class="tab" data-tab="orders">📦 Orders</button>
       <button class="tab" data-tab="audit">📜 Audit log</button>
     </nav>
 
@@ -98,6 +99,21 @@
       <div class="table-wrap"><table id="data-table"></table></div>
     </div>
 
+    <!-- purchase orders -->
+    <div class="panel" id="panel-orders">
+      <div class="panel-head row">
+        <div>
+          <h2>Purchase orders</h2>
+          <p class="muted" id="orders-sub"></p>
+        </div>
+        <div class="actions" id="orders-actions">
+          <label class="btn btn-primary" id="po-upload-label">⬆ Upload a PO<input type="file" id="po-file" accept="image/jpeg,image/png,application/pdf" hidden></label>
+          <button class="btn btn-ghost" id="po-type">Type a PO</button>
+        </div>
+      </div>
+      <div class="table-wrap"><table id="orders-table"></table></div>
+    </div>
+
     <!-- audit -->
     <div class="panel" id="panel-audit">
       <div class="panel-head row">
@@ -128,6 +144,20 @@
     <button class="btn btn-primary" type="submit" id="thread-send">Send</button>
   </form>
   <p class="drawer-closed muted small" id="thread-closed" hidden>This dispute is resolved, so messaging is closed.</p>
+</aside>
+
+<!-- purchase order editor / review -->
+<div class="drawer-backdrop" id="po-backdrop" hidden></div>
+<aside class="drawer drawer-wide" id="po-drawer" hidden aria-label="Purchase order">
+  <header class="drawer-head">
+    <div>
+      <div class="drawer-title" id="po-title"></div>
+      <div class="drawer-sub" id="po-sub"></div>
+    </div>
+    <button class="btn btn-ghost btn-icon" id="po-close" aria-label="Close">✕</button>
+  </header>
+  <div class="po-body" id="po-body"></div>
+  <footer class="po-foot" id="po-foot"></footer>
 </aside>
 
 <div class="toast" id="toast" hidden></div>

@@ -88,6 +88,7 @@ async function login(email, password) {
 function logout(message) {
   state.token = null; state.user = null; state.sessionId = null; state.data = null;
   $("#drawer").hidden = $("#drawer-backdrop").hidden = true;
+  $("#po-drawer").hidden = $("#po-backdrop").hidden = true;
   $("#app-view").hidden = true;
   $("#login-view").hidden = false;
   if (message) { $("#login-error").textContent = message; $("#login-error").hidden = false; }
@@ -117,6 +118,10 @@ function showApp() {
   $("#user-role").textContent = u.role;
   $("#user-role").className = `badge ${u.role}`;
   $("#suggestions").innerHTML = SUGGESTIONS[u.role].map((s) => `<li>${esc(s)}</li>`).join("");
+  $("#orders-actions").hidden = u.role !== "customer";
+  $("#orders-sub").textContent = u.role === "customer"
+    ? "Send the shop a purchase order: upload a photo or scan (handwritten is fine) or type it in. You check everything before it's sent."
+    : "Purchase orders from customers. Review each one, set prices and a delivery date to accept (this creates an invoice), or reject it.";
   newChat();
   switchTab("chat");
   loadWhatsNew();
@@ -129,6 +134,7 @@ function switchTab(name) {
   $$(".panel").forEach((p) => p.classList.toggle("active", p.id === `panel-${name}`));
   if (name === "data") loadData();
   if (name === "audit") loadAudit();
+  if (name === "orders") loadOrders();
   if (name === "chat") $("#input").focus();
 }
 
@@ -264,11 +270,18 @@ const DATA_VIEWS = {
   },
   invoices: {
     label: "Invoices",
-    head: ["Invoice", "Recipient", "Status", "Amount", "Amount due", "Due date", "Issued"],
+    head: ["Invoice", "Recipient", "Status", "Amount", "Amount due", "Due date", "Issued", ""],
     row: (i) => { const s = invoiceStatus(i);
+      const canSend = state.user.role === "accountant" && i.status === "DRAFT";
+      const canPay = state.user.role === "customer" && ["SENT", "UNPAID", "PARTIALLY_PAID"].includes(i.status);
+      const actions = `<div class="row-actions">
+          <button class="btn btn-ghost btn-sm" data-inv="download" data-id="${esc(i.id)}" data-number="${esc(i.detail?.invoice_number || "invoice")}">⬇ PDF</button>
+          ${canSend ? `<button class="btn btn-primary btn-sm" data-inv="send" data-id="${esc(i.id)}" data-to="${esc(recipientOf(i))}">Send</button>` : ""}
+          ${canPay ? `<button class="btn btn-primary btn-sm" data-inv="pay" data-id="${esc(i.id)}" data-amount="${esc(i.due_amount?.value || "")}">Pay ${money(i.due_amount)}</button>` : ""}
+        </div>`;
       return [`<b>${esc(i.detail?.invoice_number)}</b><div class="desc mono">${esc(i.id)}</div>`, esc(recipientOf(i)),
         `<span class="badge ${s.kind}">${esc(s.text)}</span>`, money(i.amount), money(i.due_amount),
-        esc(i.detail?.payment_term?.due_date || "—"), esc(i.detail?.invoice_date)]; },
+        esc(i.detail?.payment_term?.due_date || "—"), esc(i.detail?.invoice_date), actions]; },
   },
   transactions: {
     label: "Transactions",
@@ -393,8 +406,14 @@ function timeAgo(iso) {
   return days === 1 ? "yesterday" : `${days} days ago`;
 }
 
+function shipDue(i) {
+  if (i.days_left === null || i.days_left === undefined) return "paid";
+  if (i.days_left < 0) return `<span class="amount-neg">delivery date passed ${-i.days_left} day${i.days_left === -1 ? "" : "s"} ago</span>`;
+  return `deliver by ${esc(fmtDate(i.expected_date))} (${i.days_left === 0 ? "today" : `${i.days_left} day${i.days_left === 1 ? "" : "s"} left`})`;
+}
+
 function whatsNewItem(i) {
-  const about = `${esc(DISPUTE_REASONS[i.reason] || "Dispute")} · ${money(i.amount)}`;
+  const about = i.reason ? `${esc(DISPUTE_REASONS[i.reason] || "Dispute")} · ${money(i.amount)}` : "";
   const quote = i.text ? `<div class="quote">“${esc(i.text.length > 140 ? i.text.slice(0, 140) + "…" : i.text)}”</div>` : "";
   const due = !i.action_needed ? "" : i.days_left === null ? " · action needed"
     : i.days_left < 0 ? ` · <span class="amount-neg">overdue by ${-i.days_left} day${i.days_left === -1 ? "" : "s"}</span>`
@@ -404,7 +423,25 @@ function whatsNewItem(i) {
     new_message: [`📬 New message from ${esc(i.with)} · ${timeAgo(i.time)}${due}`, "Open", "open"],
     needs_reply: [`✍️ ${esc(i.with)} wrote ${timeAgo(i.time)} · waiting for your reply${due}`, "Reply", "open"],
     no_reply_yet: [`⏳ You wrote ${timeAgo(i.time)} · no reply yet from ${esc(i.with)}`, "Send a reminder", "remind"],
+    new_po: [`📥 New purchase order from ${esc(i.with)} · ${timeAgo(i.time)}${i.requested_date ? ` · needed by ${esc(fmtDate(i.requested_date))}` : ""}`, "Review", "po"],
+    po_accepted: [`✅ Your purchase order was accepted · expected delivery ${esc(fmtDate(i.expected_date))}`, "View", "po"],
+    po_rejected: [`❌ Your purchase order was declined`, "View", "po"],
+    po_send_invoice: [`🧾 Send the invoice for ${esc(i.with)}'s order`, "Open", "po"],
+    po_ship: [`📦 Ship ${esc(i.with)}'s order · ${shipDue(i)}`, "Ship", "po"],
+    po_not_received: [`🔴 ${esc(i.with)} says the order hasn't arrived`, "Follow up", "po"],
+    po_pay: [`💳 Pay for your order to start processing`, "Pay", "po"],
+    po_shipped: [`🚚 Your order has shipped${i.tracking_number ? ` · ${esc(i.carrier || "")} ${esc(i.tracking_number)}` : ""} · expected ${esc(fmtDate(i.expected_date))}`, "Track", "po"],
+    po_confirm: [`📦 Has your order arrived? It was expected ${esc(fmtDate(i.expected_date))}`, "Confirm", "po"],
   };
+  if (i.kind.startsWith("po") || i.kind === "new_po") {
+    const [what, label] = texts[i.kind];
+    const ref = i.customer_po_ref ? ` · your ref ${esc(i.customer_po_ref)}` : "";
+    const detail = i.kind === "new_po" ? `${i.items} item${i.items === 1 ? "" : "s"}: ${esc(i.text)}`
+      : i.kind === "po_rejected" ? `Reason: ${esc(i.text)}`
+      : i.kind === "po_not_received" ? `“${esc(i.text)}”` : esc(i.text);
+    return `<div class="wn-item"><div><div class="what">${what}</div><div class="quote">${esc(i.po_id)}${i.kind === "new_po" ? ref : ""}</div><div class="quote">${detail}</div></div>
+      <button class="btn btn-ghost" data-wn="po" data-po="${esc(i.po_id)}">${label}</button></div>`;
+  }
   const [what, label, action] = texts[i.kind];
   return `<div class="wn-item"><div><div class="what">${what}</div><div class="quote">${about}</div>${quote}</div>
     <button class="btn ${action === "remind" ? "btn-primary" : "btn-ghost"}" data-wn="${action}" data-dispute="${esc(i.dispute_id)}"
@@ -425,9 +462,365 @@ async function loadWhatsNew() {
     const b = e.target.closest("[data-wn]");
     if (!b) return;
     if (b.dataset.wn === "open") return openDispute(b.dataset.dispute);
+    if (b.dataset.wn === "po") { switchTab("orders"); return openPO(b.dataset.po); }
     const days = b.dataset.days ? ` I wrote ${b.dataset.days} days ago and haven't heard back.` : "";
     send(`Send a polite reminder on dispute ${b.dataset.dispute}.${days}`);
   });
+}
+
+// ---------------------------------------------------------------- invoices: download and send
+
+async function downloadInvoice(id, number) {
+  const res = await fetch(`/api/invoices/${encodeURIComponent(id)}/pdf`, { headers: { Authorization: `Bearer ${state.token}` } });
+  if (res.status === 401) return logout("Your session has expired. Please log in again.");
+  if (!res.ok) return toast((await res.json().catch(() => ({}))).detail || "Download failed.");
+  const url = URL.createObjectURL(await res.blob());
+  const a = Object.assign(document.createElement("a"), { href: url, download: `${number}.pdf` });
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+async function payInvoice(btn) {
+  // a second click confirms, like Send
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = "1";
+    btn.textContent = `Confirm payment of ${money({ value: btn.dataset.amount })}?`;
+    setTimeout(() => { if (btn.isConnected && btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = `Pay ${money({ value: btn.dataset.amount })}`; } }, 5000);
+    return;
+  }
+  btn.disabled = true;
+  try {
+    await api(`/api/invoices/${encodeURIComponent(btn.dataset.id)}/pay`, { method: "POST" });
+    toast("Paid with PayPal. Thank you!");
+    loadData();
+  } catch (err) { if (err.message !== "unauthorized") { toast(err.message); btn.disabled = false; } }
+}
+
+async function sendInvoice(btn) {
+  // a second click within 5 seconds confirms (no browser pop-ups)
+  if (!btn.dataset.armed) {
+    if (!btn.dataset.to || btn.dataset.to === "—") return toast("Add a recipient email before sending this invoice.");
+    btn.dataset.armed = "1";
+    btn.textContent = `Send to ${btn.dataset.to}?`;
+    setTimeout(() => { if (btn.isConnected && btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = "Send"; } }, 5000);
+    return;
+  }
+  btn.disabled = true;
+  try {
+    await api(`/api/invoices/${encodeURIComponent(btn.dataset.id)}/send`, { method: "POST" });
+    toast(`Invoice sent to ${btn.dataset.to}.`);
+    loadData();
+  } catch (err) {
+    if (err.message !== "unauthorized") { toast(err.message); btn.disabled = false; delete btn.dataset.armed; btn.textContent = "Send"; }
+  }
+}
+
+// ---------------------------------------------------------------- purchase orders
+
+const fmtDate = (d) => (d ? new Date(`${d}T00:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "—");
+const todayIso = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+let po = null;          // the PO open in the panel (or a new, unsaved one)
+let poDocUrl = null;    // object URL of its document preview
+
+function poStatus(p) {
+  const shop = state.user.role === "accountant";
+  return {
+    draft: { text: "Draft · not sent", kind: "neutral" },
+    submitted: shop ? { text: "Needs review", kind: "error" } : { text: "Sent · waiting for the shop", kind: "waiting" },
+    accepted: shop ? { text: "Accepted · send the invoice", kind: "waiting" } : { text: "Accepted · invoice coming", kind: "ok" },
+    invoiced: shop ? { text: "Invoiced · awaiting payment", kind: "waiting" } : { text: "Pay the invoice", kind: "error" },
+    paid: shop ? { text: "Paid · ship it", kind: "error" } : { text: "Paid · processing", kind: "ok" },
+    shipped: { text: "Shipped", kind: "ok" },
+    delivered: { text: "Delivered", kind: "ok" },
+    not_received: shop ? { text: "Not received · follow up", kind: "error" } : { text: "Reported not received", kind: "waiting" },
+    rejected: { text: "Declined", kind: "neutral" },
+  }[p.status];
+}
+
+// The order's journey, for the PO panel: each step with its date, done or not yet.
+function poTimeline(p) {
+  const steps = [  // [label, date shown, done?]
+    ["Sent to the shop", p.created_at, p.status !== "draft"],
+    ["Accepted", null, Boolean(p.invoice_id)],
+    ["Paid", p.paid_at, Boolean(p.paid_at)],
+    ["Shipped", p.shipped_at, Boolean(p.shipped_at)],
+    [p.status === "not_received" ? "Reported not received" : "Delivered", p.delivered_at || p.not_received_at, Boolean(p.delivered_at || p.not_received_at)],
+  ];
+  if (p.status === "rejected") return "";
+  return `<ol class="timeline">${steps.map(([label, when, done]) =>
+    `<li class="${done ? "done" : ""}"><span>${esc(label)}</span><small>${done && when ? esc(fmtDate(String(when).slice(0, 10))) : ""}</small></li>`).join("")}</ol>`;
+}
+
+// One line telling the viewer where the order stands and what (if anything) they need to do.
+function poStageNote(p, shop) {
+  const days = p.expected_date ? Math.round((new Date(`${p.expected_date}T00:00:00`) - new Date(`${todayIso()}T00:00:00`)) / 86400000) : null;
+  const when = days === null ? "" : days > 0 ? ` (${days} day${days === 1 ? "" : "s"} left)` : days === 0 ? " (today)" : ` (${-days} day${days === -1 ? "" : "s"} ago)`;
+  const good = (t) => `<div class="unclear" style="background:var(--ok-soft);color:var(--ok)">${t}</div>`;
+  const todo = (t) => `<div class="unclear">${t}</div>`;
+  const notes = shop ? {
+    accepted: todo("A draft invoice was created. Send it so the customer can pay."),
+    invoiced: good("Invoice sent. Waiting for the customer to pay."),
+    paid: todo(`Paid. Ship it by <b>${fmtDate(p.expected_date)}</b>${when} and add the tracking number.`),
+    shipped: good(`On its way. The customer confirms when it arrives.`),
+    delivered: good(`Delivered: the customer confirmed on ${fmtDate(String(p.delivered_at).slice(0, 10))}.`),
+    not_received: todo(`The customer says it hasn't arrived${p.not_received_note ? `: “${esc(p.not_received_note)}”` : "."} Check with the carrier, then ship again (or refund from the chat).`),
+  } : {
+    accepted: good(`Accepted. Your invoice is on its way; expected delivery <b>${fmtDate(p.expected_date)}</b>.`),
+    invoiced: todo(`Please pay the invoice to start processing. Expected delivery <b>${fmtDate(p.expected_date)}</b>.`),
+    paid: days !== null && days < 0 ? todo(`Expected ${fmtDate(p.expected_date)}${when}. Has it arrived?`)
+      : good(`Paid, thank you. Your order is being prepared; expected delivery <b>${fmtDate(p.expected_date)}</b>${when}.`),
+    shipped: days !== null && days <= 0 ? todo(`It should have arrived by now. Did you get it?`)
+      : good(`On its way. Expected <b>${fmtDate(p.expected_date)}</b>${when}.`),
+    delivered: good("Delivered. Thanks for your order!"),
+    not_received: todo("You reported it hasn't arrived. The shop has been told and will follow up."),
+  };
+  return notes[p.status] || "";
+}
+
+async function poAction(path, body, message) {
+  try {
+    const res = await api(`/api/pos/${encodeURIComponent(po.po_id)}/${path}`, { method: "POST", body: JSON.stringify(body || {}) });
+    toast(message);
+    showPO(res); loadOrders();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+}
+
+async function poPay() {
+  try {
+    await api(`/api/invoices/${encodeURIComponent(po.invoice_id)}/pay`, { method: "POST" });
+    toast("Paid with PayPal. Thank you!");
+    openPO(po.po_id); loadOrders();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+}
+
+async function poSendInvoice() {
+  try {
+    await api(`/api/invoices/${encodeURIComponent(po.invoice_id)}/send`, { method: "POST" });
+    toast(`Invoice sent to ${po.customer?.email || "the customer"}.`);
+    openPO(po.po_id); loadOrders();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+}
+
+function poShip() {
+  const carrier = $("#po-carrier").value.trim(), tracking = $("#po-tracking").value.trim();
+  if (carrier.length < 2 || tracking.length < 3) return toast("Add the carrier and tracking number.");
+  poAction("ship", { carrier, tracking_number: tracking }, `${po.po_id} marked as shipped.`);
+}
+
+function poMissing() {
+  const wrap = $("#po-missing-wrap");
+  if (wrap.hidden) { wrap.hidden = false; $("#po-missing-note").focus(); $("#po-missing").textContent = "Report it missing"; return; }
+  poAction("not-received", { note: $("#po-missing-note").value.trim() || null }, "Reported. The shop will follow up.");
+}
+
+async function loadOrders() {
+  $("#orders-table").innerHTML = `<tr><td class="empty-row">Loading…</td></tr>`;
+  let res;
+  try { res = await api("/api/pos"); } catch (err) { if (err.message !== "unauthorized") $("#orders-table").innerHTML = `<tr><td class="empty-row">${esc(err.message)}</td></tr>`; return; }
+  const shop = state.user.role === "accountant";
+  const head = shop ? ["PO", "Customer", "Items", "Needed by", "Status", "Delivery", "Invoice"] : ["PO", "Your ref", "Items", "Needed by", "Status", "Delivery", "Invoice"];
+  const rows = res.items.map((p) => {
+    const s = poStatus(p);
+    const items = p.items.map((i) => `${i.quantity} × ${esc(i.name)}`).join(", ") || "—";
+    const invoice = p.invoice_id ? `<button class="btn btn-ghost btn-sm" data-inv="download" data-id="${esc(p.invoice_id)}" data-number="${esc(p.po_id)}-invoice">⬇ PDF</button>` : "—";
+    return `<tr class="clickable" data-po="${esc(p.po_id)}"><td><b>${esc(p.po_id)}</b>${p.has_document ? ` <span class="desc">📎</span>` : ""}</td>
+      <td>${shop ? esc(p.customer?.name || "") : esc(p.customer_po_ref || "—")}</td><td><div class="desc">${items}</div></td>
+      <td>${fmtDate(p.requested_date)}</td><td><span class="badge ${s.kind}">${esc(s.text)}</span></td>
+      <td>${p.expected_date ? fmtDate(p.expected_date) : "—"}</td><td>${invoice}</td></tr>`;
+  }).join("");
+  $("#orders-table").innerHTML = `<tr>${head.map((h) => `<th>${h}</th>`).join("")}</tr>` +
+    (rows || `<tr><td class="empty-row" colspan="${head.length}">${shop ? "No purchase orders yet." : "No purchase orders yet. Upload a photo of your PO or type one in."}</td></tr>`);
+}
+
+async function apiUpload(path, formData) {
+  const res = await fetch(path, { method: "POST", body: formData, headers: { Authorization: `Bearer ${state.token}` } });
+  if (res.status === 401) { logout("Your session has expired. Please log in again."); throw new Error("unauthorized"); }
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `Upload failed (${res.status})`);
+  return body;
+}
+
+async function uploadPO(file) {
+  if (!file) return;
+  const fd = new FormData();
+  fd.append("file", file);
+  toast("Reading your purchase order…");
+  try {
+    const res = await apiUpload("/api/pos/read", fd);
+    showPO(res.po, { unclear: res.unclear, readOk: res.read_ok });
+    loadOrders();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+  finally { $("#po-file").value = ""; }
+}
+
+async function openPO(id) {
+  try { showPO(await api(`/api/pos/${encodeURIComponent(id)}`)); } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+}
+
+function itemRow(i = {}, withPrice = true) {
+  return `<tr>
+    <td><input data-f="name" value="${esc(i.name || "")}" placeholder="Item"></td>
+    <td class="qty"><input data-f="quantity" type="number" min="1" step="1" value="${esc(i.quantity || 1)}"></td>
+    ${withPrice ? `<td class="price"><input data-f="unit_price" class="num" inputmode="decimal" value="${esc(i.unit_price || "")}" placeholder="${state.user.role === "accountant" ? "0.00" : "optional"}"></td>` : ""}
+    <td class="del"><button type="button" class="btn btn-ghost btn-icon" data-del title="Remove">✕</button></td></tr>`;
+}
+
+function readItems() {
+  return $$("#po-items tbody tr").map((tr) => {
+    const get = (f) => tr.querySelector(`[data-f="${f}"]`)?.value.trim() ?? "";
+    return { name: get("name"), quantity: parseInt(get("quantity") || "0", 10), unit_price: get("unit_price") || null };
+  }).filter((i) => i.name);
+}
+
+function updateTotal() {
+  const items = readItems();
+  const priced = items.length && items.every((i) => i.unit_price && !isNaN(Number(i.unit_price)));
+  const el = $("#po-total");
+  if (el) el.textContent = priced ? `Total ${money({ value: items.reduce((s, i) => s + Number(i.unit_price) * i.quantity, 0) })}` : "";
+}
+
+async function showDocument(p) {
+  if (poDocUrl) { URL.revokeObjectURL(poDocUrl); poDocUrl = null; }
+  const box = $("#po-doc");
+  if (!box) return;
+  try {
+    const res = await fetch(`/api/pos/${encodeURIComponent(p.po_id)}/document`, { headers: { Authorization: `Bearer ${state.token}` } });
+    if (!res.ok) throw new Error();
+    poDocUrl = URL.createObjectURL(await res.blob());
+    box.innerHTML = p.document_type === "application/pdf" ? `<iframe src="${poDocUrl}" title="Purchase order document"></iframe>` : `<img src="${poDocUrl}" alt="Purchase order document">`;
+  } catch { box.innerHTML = `<p class="muted">Couldn't load the document.</p>`; }
+}
+
+function showPO(p, { unclear = [], readOk = true } = {}) {
+  po = p;
+  const shop = state.user.role === "accountant";
+  const s = p.status ? poStatus(p) : { text: "New", kind: "neutral" };
+  const editable = (!shop && (!p.status || p.status === "draft")) || (shop && p.status === "submitted");
+  $("#po-title").textContent = p.po_id ? `Purchase order ${p.po_id}` : "New purchase order";
+  $("#po-sub").innerHTML = `<span class="badge ${s.kind}">${esc(s.text)}</span>` +
+    (shop && p.customer ? `<span>from ${esc(p.customer.name)} · ${esc(p.customer.email)}</span>` : "") +
+    (p.customer_po_ref ? `<span>ref ${esc(p.customer_po_ref)}</span>` : "");
+
+  const notes = [];
+  if (!readOk) notes.push("The document couldn't be read automatically right now. Please fill in the details below.");
+  if (unclear.length) notes.push(`Please double-check: <ul>${unclear.map((u) => `<li>${esc(u)}</li>`).join("")}</ul>`);
+  const notesHtml = notes.length ? `<div class="unclear">${notes.join("<br>")}</div>` : "";
+
+  let form;
+  if (editable && !shop) {
+    form = `${notesHtml}
+      <div class="grid2">
+        <label>Your PO number<input id="po-ref" value="${esc(p.customer_po_ref || "")}" placeholder="optional"></label>
+        <label>Needed by<input id="po-date" type="date" min="${todayIso()}" value="${esc(p.requested_date || "")}"></label>
+      </div>
+      <table class="po-items" id="po-items"><thead><tr><th>Item</th><th>Qty</th><th>Unit price</th><th></th></tr></thead>
+        <tbody>${(p.items?.length ? p.items : [{}]).map((i) => itemRow(i)).join("")}</tbody></table>
+      <button type="button" class="btn btn-ghost" id="po-add">＋ Add item</button>
+      <label>Notes for the shop<textarea id="po-notes" rows="3" placeholder="Delivery address, contact, anything else">${esc(p.notes || "")}</textarea></label>`;
+  } else if (editable && shop) {
+    form = `<div class="grid2">
+        <div><div class="desc">Customer's ref</div><b>${esc(p.customer_po_ref || "—")}</b></div>
+        <div><div class="desc">Needed by</div><b>${fmtDate(p.requested_date)}</b></div>
+      </div>
+      ${p.notes ? `<div><div class="desc">Customer's notes</div>${esc(p.notes)}</div>` : ""}
+      <table class="po-items" id="po-items"><thead><tr><th>Item</th><th>Qty</th><th>Unit price</th><th></th></tr></thead>
+        <tbody>${p.items.map((i) => itemRow(i)).join("")}</tbody></table>
+      <button type="button" class="btn btn-ghost" id="po-add">＋ Add item</button>
+      <div class="grid2">
+        <label>Expected delivery<input id="po-expected" type="date" min="${todayIso()}" value="${esc(p.requested_date && p.requested_date >= todayIso() ? p.requested_date : "")}"></label>
+        <label>Note on the invoice<input id="po-note" placeholder="optional"></label>
+      </div>
+      <label id="po-reject-wrap" hidden>Reason for declining<input id="po-reason" placeholder="e.g. out of stock until November"></label>`;
+  } else {
+    form = `<div class="grid2">
+        <div><div class="desc">${shop ? "Customer's ref" : "Your PO number"}</div><b>${esc(p.customer_po_ref || "—")}</b></div>
+        <div><div class="desc">Needed by</div><b>${fmtDate(p.requested_date)}</b></div>
+      </div>
+      <ul class="readonly-list">${p.items.map((i) => `<li>${i.quantity} × ${esc(i.name)}${i.unit_price ? ` · ${money({ value: i.unit_price })} each` : ""}</li>`).join("")}</ul>
+      ${p.total ? `<div><b>Total ${money({ value: p.total })}</b></div>` : ""}
+      ${p.notes ? `<div><div class="desc">Notes</div>${esc(p.notes)}</div>` : ""}
+      ${poTimeline(p)}
+      ${p.expected_date ? `<div><div class="desc">Expected delivery</div><b>${fmtDate(p.expected_date)}</b></div>` : ""}
+      ${p.tracking_number ? `<div class="tracking"><div class="desc">Tracking</div><b>${esc(p.carrier || "")} · ${esc(p.tracking_number)}</b></div>` : ""}
+      ${poStageNote(p, shop)}
+      ${shop && ["paid", "not_received"].includes(p.status) ? `<div class="grid2">
+          <label>Carrier<input id="po-carrier" placeholder="e.g. FedEx, DHL, Blue Dart" value="${esc(p.carrier || "")}"></label>
+          <label>Tracking number<input id="po-tracking" placeholder="e.g. 1Z999AA10123456784"></label></div>` : ""}
+      ${!shop && ["shipped", "paid"].includes(p.status) ? `<label id="po-missing-wrap" hidden>What happened? (optional)<input id="po-missing-note" placeholder="e.g. tracking says delivered but nothing arrived"></label>` : ""}
+      ${p.status === "rejected" ? `<div class="unclear">Declined: ${esc(p.reject_reason || "")}</div>` : ""}`;
+  }
+
+  $("#po-body").className = `po-body ${p.has_document ? "" : "single"}`;
+  $("#po-body").innerHTML = `${p.has_document ? `<div class="po-doc" id="po-doc"><p class="muted">Loading document…</p></div>` : ""}<div class="po-form">${form}</div>`;
+
+  let foot = "";
+  if (editable && !shop) foot = `<span class="po-total" id="po-total"></span><button class="btn btn-ghost" id="po-save">Save draft</button><button class="btn btn-primary" id="po-submit">Send to the shop</button>`;
+  if (editable && shop) foot = `<span class="po-total" id="po-total"></span><button class="btn btn-ghost" id="po-reject">Decline</button><button class="btn btn-primary" id="po-accept">Accept &amp; create invoice</button>`;
+  if (!editable) {
+    const pdf = p.invoice_id ? `<button class="btn btn-ghost" data-inv="download" data-id="${esc(p.invoice_id)}" data-number="${esc(p.po_id)}-invoice">⬇ Invoice PDF</button>` : "";
+    const next = shop ? {
+      accepted: `<button class="btn btn-primary" id="po-send-invoice">Send invoice to ${esc(p.customer?.email || "customer")}</button>`,
+      paid: `<button class="btn btn-primary" id="po-ship">Mark as shipped</button>`,
+      not_received: `<button class="btn btn-primary" id="po-ship">Ship again</button>`,
+    }[p.status] : {
+      invoiced: `<button class="btn btn-primary" id="po-pay">Pay ${p.total ? money({ value: p.total }) : ""} with PayPal</button>`,
+      shipped: `<button class="btn btn-ghost" id="po-missing">Not received</button><button class="btn btn-primary" id="po-delivered">Yes, it arrived</button>`,
+      paid: p.expected_date && p.expected_date < todayIso()
+        ? `<button class="btn btn-ghost" id="po-missing">Not received</button><button class="btn btn-primary" id="po-delivered">Yes, it arrived</button>` : "",
+    }[p.status];
+    foot = `${pdf}${next || ""}`;
+  }
+  $("#po-foot").innerHTML = foot;
+  $("#po-foot").hidden = !foot;
+
+  $("#po-drawer").hidden = $("#po-backdrop").hidden = false;
+  if (p.has_document) showDocument(p);
+  updateTotal();
+}
+
+function closePO() {
+  $("#po-drawer").hidden = $("#po-backdrop").hidden = true;
+  if (poDocUrl) { URL.revokeObjectURL(poDocUrl); poDocUrl = null; }
+  po = null;
+}
+
+function customerDraft() {
+  return { items: readItems(), customer_po_ref: $("#po-ref").value.trim() || null, requested_date: $("#po-date").value || null, notes: $("#po-notes").value.trim() || null };
+}
+
+async function savePO(send) {
+  const body = customerDraft();
+  if (send && !body.items.length) return toast("Add at least one item.");
+  try {
+    let saved = po.po_id ? await api(`/api/pos/${encodeURIComponent(po.po_id)}`, { method: "PUT", body: JSON.stringify(body) })
+                         : await api("/api/pos", { method: "POST", body: JSON.stringify(body) });
+    if (send) saved = await api(`/api/pos/${encodeURIComponent(saved.po_id)}/submit`, { method: "POST" });
+    toast(send ? `${saved.po_id} sent to the shop.` : `${saved.po_id} saved as a draft.`);
+    closePO(); loadOrders();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+}
+
+async function decidePO(accept) {
+  if (accept) {
+    const items = readItems();
+    if (!items.length || items.some((i) => !i.unit_price)) return toast("Give every item a unit price.");
+    const expected = $("#po-expected").value;
+    if (!expected) return toast("Pick an expected delivery date.");
+    try {
+      const res = await api(`/api/pos/${encodeURIComponent(po.po_id)}/accept`, { method: "POST", body: JSON.stringify({ items, expected_date: expected, note: $("#po-note").value.trim() || null }) });
+      toast(`${res.po_id} accepted. A draft invoice was created (see PayMind data → Invoices).`);
+      closePO(); loadOrders();
+    } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+    return;
+  }
+  const wrap = $("#po-reject-wrap");
+  if (wrap.hidden) { wrap.hidden = false; $("#po-reason").focus(); $("#po-reject").textContent = "Confirm decline"; return; }
+  const reason = $("#po-reason").value.trim();
+  if (reason.length < 3) return toast("Add a short reason for the customer.");
+  try {
+    const res = await api(`/api/pos/${encodeURIComponent(po.po_id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
+    toast(`${res.po_id} declined.`); closePO(); loadOrders();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
 }
 
 // ---------------------------------------------------------------- dispute conversation
@@ -517,10 +910,45 @@ document.addEventListener("DOMContentLoaded", () => {
     renderDataTable();
   });
   $("#audit-refresh").addEventListener("click", loadAudit);
-  $("#data-table").addEventListener("click", (e) => { const row = e.target.closest("tr[data-dispute]"); if (row) openDispute(row.dataset.dispute); });
+  $("#data-table").addEventListener("click", (e) => {
+    const inv = e.target.closest("[data-inv]");
+    if (inv) return inv.dataset.inv === "download" ? downloadInvoice(inv.dataset.id, inv.dataset.number)
+      : inv.dataset.inv === "pay" ? payInvoice(inv) : sendInvoice(inv);
+    const row = e.target.closest("tr[data-dispute]");
+    if (row) openDispute(row.dataset.dispute);
+  });
+  $("#po-file").addEventListener("change", (e) => uploadPO(e.target.files[0]));
+  $("#po-type").addEventListener("click", () => showPO({ items: [] }));
+  $("#po-close").addEventListener("click", closePO);
+  $("#po-backdrop").addEventListener("click", closePO);
+  $("#orders-table").addEventListener("click", (e) => {
+    const inv = e.target.closest("[data-inv]");
+    if (inv) return downloadInvoice(inv.dataset.id, inv.dataset.number);
+    const row = e.target.closest("tr[data-po]");
+    if (row) openPO(row.dataset.po);
+  });
+  $("#po-drawer").addEventListener("click", (e) => {
+    const inv = e.target.closest("[data-inv]");
+    if (inv) return downloadInvoice(inv.dataset.id, inv.dataset.number);
+    if (e.target.closest("[data-del]")) { e.target.closest("tr").remove(); return updateTotal(); }
+    if (e.target.id === "po-add") { $("#po-items tbody").insertAdjacentHTML("beforeend", itemRow()); return; }
+    if (e.target.id === "po-save") return savePO(false);
+    if (e.target.id === "po-submit") return savePO(true);
+    if (e.target.id === "po-accept") return decidePO(true);
+    if (e.target.id === "po-reject") return decidePO(false);
+    if (e.target.id === "po-pay") return poPay();
+    if (e.target.id === "po-send-invoice") return poSendInvoice();
+    if (e.target.id === "po-ship") return poShip();
+    if (e.target.id === "po-delivered") return poAction("delivered", {}, "Thanks for confirming!");
+    if (e.target.id === "po-missing") return poMissing();
+  });
+  $("#po-drawer").addEventListener("input", (e) => { if (e.target.closest("#po-items")) updateTotal(); });
   $("#drawer-close").addEventListener("click", closeDispute);
   $("#drawer-backdrop").addEventListener("click", closeDispute);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("#drawer").hidden) closeDispute(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!$("#po-drawer").hidden) closePO(); else if (!$("#drawer").hidden) closeDispute();
+  });
   $("#thread-form").addEventListener("submit", (e) => { e.preventDefault(); sendThreadMessage(); });
   $("#thread-input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendThreadMessage(); } });
   $$("#tx-period button").forEach((b) => b.addEventListener("click", () => { state.txPeriod = b.dataset.period; state.txAnchor = new Date(); loadTransactions(); }));

@@ -25,3 +25,6 @@ qdrant_data/
 *.db-shm
 *.db-wal
 *.db-journal
+
+# Customer-uploaded documents (purchase orders): private, never committed
+data/app/uploads/

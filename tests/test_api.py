@@ -47,13 +47,24 @@ def fake_search(query, role=None, k=5, include_eval_only=True):
     return [(n, REGISTRY.get(n)["description"]) for n in names][:k]
 
 
+def fake_po_reader(data, mime):
+    """Stands in for Gemini reading a handwritten PO."""
+    from paymind.app.po_reader import POExtraction, POLine
+    if b"unreadable" in data:
+        raise RuntimeError("503 model busy")
+    return POExtraction(customer_po_ref="RS-2026-07", requested_delivery_date="2030-10-05", notes="Deliver to back door",
+                        items=[POLine(name="Wireless Headphones", quantity=2, unit_price="$79.99"), POLine(name="Phone Case", quantity=3)],
+                        unclear=["quantity on line 2 could be 3 or 8"])
+
+
 @pytest.fixture
 def setup(tmp_path):
     mock = create_mock(db_path=tmp_path / "mock.db", slow_seconds=0)
     executor = Executor(REGISTRY, base_url="http://testserver", client=TestClient(mock), sleep=lambda s: None)
     agent = FakeAgent()
     services = Services(appdb=AppDatabase(tmp_path / "app.db"), executor=executor, registry=REGISTRY,
-                        search=fake_search, agent_factory=lambda: agent, mock_base_url="http://testserver")
+                        search=fake_search, agent_factory=lambda: agent, mock_base_url="http://testserver",
+                        po_reader=fake_po_reader, uploads=tmp_path / "uploads")
     return TestClient(create_app(services, jwt_secret=SECRET)), agent, services
 
 
@@ -290,3 +301,225 @@ def test_whats_new_endpoint(setup):
     rahul_items = client.get("/api/whats-new", headers=login(client, "rahul")).json()["items"]
     assert all(i["with"] == "PayMind Demo Store" for i in rahul_items)   # only his own dispute, with the shop
     assert client.get("/api/whats-new").status_code == 401
+
+
+# ---- invoices: download and send ----------------------------------------------------------------------
+
+def invoice_where(services, status=None, email=None):
+    def recipient(i):
+        return ((i.get("primary_recipients") or [{}])[0].get("billing_info") or {}).get("email_address")
+    rows = services.executor.execute("list_invoices", {"page_size": 100}).body["items"]
+    return next(i for i in rows if (status is None or i["status"] == status) and (email is None or recipient(i) == email))
+
+
+def test_download_invoice_pdf(setup):
+    client, _, services = setup
+    inv = invoice_where(services, email="rahul.sharma@example.com")
+    r = client.get(f"/api/invoices/{inv['id']}/pdf", headers=login(client, "rahul"))
+    assert r.status_code == 200 and r.headers["content-type"] == "application/pdf"
+    assert r.content.startswith(b"%PDF") and f'{inv["detail"]["invoice_number"]}.pdf' in r.headers["content-disposition"]
+    assert client.get(f"/api/invoices/{inv['id']}/pdf", headers=login(client, "asha")).status_code == 200
+
+
+def test_customer_cannot_download_someone_elses_invoice(setup):
+    client, _, services = setup
+    other = invoice_where(services, email="maria@acme.example")
+    assert client.get(f"/api/invoices/{other['id']}/pdf", headers=login(client, "rahul")).status_code == 404
+    assert client.get("/api/invoices/INV2-NOPE/pdf", headers=login(client, "asha")).status_code == 404
+
+
+def test_accountant_sends_a_draft(setup):
+    client, _, services = setup
+    draft = invoice_where(services, status="DRAFT", email="john@x.com")
+    sent = client.post(f"/api/invoices/{draft['id']}/send", headers=login(client, "asha"))
+    assert sent.status_code == 200 and sent.json()["status"] == "SENT"
+    again = client.post(f"/api/invoices/{draft['id']}/send", headers=login(client, "asha"))
+    assert again.status_code == 422 and "CANNOT_SEND_INVOICE" in again.json()["detail"]
+    log = services.appdb.recent_actions("u_asha")
+    assert [(a["tool"], a["status"]) for a in log[:2]] == [("send_invoice", "failed"), ("send_invoice", "success")]
+
+
+def test_customers_cannot_send_invoices(setup):
+    client, _, services = setup
+    draft = invoice_where(services, status="DRAFT", email="john@x.com")
+    assert client.post(f"/api/invoices/{draft['id']}/send", headers=login(client, "rahul")).status_code == 403
+
+
+# ---- purchase orders ----------------------------------------------------------------------------------
+
+PNG = b"\x89PNG\r\n\x1a\n" + b"fake image bytes"
+
+
+def upload(client, headers, data=PNG, name="po.png", mime="image/png"):
+    return client.post("/api/pos/read", files={"file": (name, data, mime)}, headers=headers)
+
+
+def test_customer_uploads_checks_and_sends_a_po(setup):
+    client, _, services = setup
+    rahul = login(client, "rahul")
+    res = upload(client, rahul).json()
+    po = res["po"]
+    assert res["read_ok"] and res["unclear"] == ["quantity on line 2 could be 3 or 8"]
+    assert po["status"] == "draft" and po["customer_po_ref"] == "RS-2026-07" and po["requested_date"] == "2030-10-05"
+    assert po["items"] == [{"name": "Wireless Headphones", "quantity": 2, "unit_price": "79.99"},   # "$79.99" cleaned
+                           {"name": "Phone Case", "quantity": 3, "unit_price": None}]
+    assert client.get(f"/api/pos/{po['po_id']}/document", headers=rahul).content == PNG
+
+    # the customer fixes the unclear quantity, then sends it
+    items = [{"name": "Wireless Headphones", "quantity": 2, "unit_price": "79.99"}, {"name": "Phone Case", "quantity": 8}]
+    edited = client.put(f"/api/pos/{po['po_id']}", json={"items": items, "customer_po_ref": "RS-2026-07",
+                                                           "requested_date": "2030-10-05"}, headers=rahul).json()
+    assert edited["items"][1]["quantity"] == 8
+    sent = client.post(f"/api/pos/{po['po_id']}/submit", headers=rahul).json()
+    assert sent["status"] == "submitted"
+    assert client.put(f"/api/pos/{po['po_id']}", json={"items": items}, headers=rahul).status_code == 409   # locked once sent
+
+
+def test_shop_accepts_a_po_and_an_invoice_is_created(setup):
+    client, _, services = setup
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    po = upload(client, rahul).json()["po"]
+    client.post(f"/api/pos/{po['po_id']}/submit", headers=rahul)
+
+    new = [i for i in client.get("/api/whats-new", headers=asha).json()["items"] if i["kind"] == "new_po"]
+    assert new and new[0]["po_id"] == po["po_id"] and new[0]["with"] == "Rahul Sharma"
+
+    unpriced = [{"name": "Wireless Headphones", "quantity": 2, "unit_price": "79.99"}, {"name": "Phone Case", "quantity": 3}]
+    assert client.post(f"/api/pos/{po['po_id']}/accept", json={"items": unpriced, "expected_date": "2030-10-03"}, headers=asha).status_code == 422
+    assert client.post(f"/api/pos/{po['po_id']}/accept", json={"items": [{**unpriced[0]}], "expected_date": "2020-01-01"}, headers=asha).status_code == 422
+
+    priced = [unpriced[0], {**unpriced[1], "unit_price": "19.99"}]
+    accepted = client.post(f"/api/pos/{po['po_id']}/accept", json={"items": priced, "expected_date": "2030-10-03"}, headers=asha).json()
+    assert accepted["status"] == "accepted" and accepted["expected_date"] == "2030-10-03" and accepted["total"] == "219.95"
+
+    invoice = services.executor.execute("show_invoice_details", {"invoice_id": accepted["invoice_id"]}).body
+    assert invoice["status"] == "DRAFT" and invoice["amount"]["value"] == "219.95"
+    assert invoice["primary_recipients"][0]["billing_info"]["email_address"] == "rahul.sharma@example.com"
+    assert "RS-2026-07" in invoice["detail"]["note"] and "2030-10-03" in invoice["detail"]["note"]
+    assert client.get(f"/api/invoices/{accepted['invoice_id']}/pdf", headers=rahul).status_code == 200   # Rahul can download it
+
+    mine = client.get("/api/whats-new", headers=rahul).json()["items"]
+    assert any(i["kind"] == "po_accepted" and i["expected_date"] == "2030-10-03" for i in mine)
+    assert client.post(f"/api/pos/{po['po_id']}/accept", json={"items": priced, "expected_date": "2030-10-03"}, headers=asha).status_code == 409
+
+
+def test_shop_declines_a_po(setup):
+    client, _, _ = setup
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    po = upload(client, rahul).json()["po"]
+    client.post(f"/api/pos/{po['po_id']}/submit", headers=rahul)
+    declined = client.post(f"/api/pos/{po['po_id']}/reject", json={"reason": "Out of stock until November"}, headers=asha).json()
+    assert declined["status"] == "rejected"
+    assert any(i["kind"] == "po_rejected" and "November" in i["text"] for i in client.get("/api/whats-new", headers=rahul).json()["items"])
+
+
+def test_po_privacy_and_roles(setup):
+    client, _, _ = setup
+    rahul, priya, asha = login(client, "rahul"), login(client, "priya"), login(client, "asha")
+    po = upload(client, rahul).json()["po"]
+    assert client.get(f"/api/pos/{po['po_id']}", headers=priya).status_code == 404          # another customer
+    assert client.get(f"/api/pos/{po['po_id']}/document", headers=priya).status_code == 404
+    assert client.get(f"/api/pos/{po['po_id']}", headers=asha).status_code == 404           # shop can't see unsent drafts
+    assert upload(client, asha).status_code == 403                                          # only customers send POs
+    client.post(f"/api/pos/{po['po_id']}/submit", headers=rahul)
+    assert client.get(f"/api/pos/{po['po_id']}", headers=asha).status_code == 200
+    assert client.post(f"/api/pos/{po['po_id']}/accept", json={"items": [{"name": "x", "quantity": 1, "unit_price": "1"}],
+                                                                "expected_date": "2030-01-01"}, headers=rahul).status_code == 403
+
+
+def test_po_upload_rules_and_fallback(setup):
+    client, _, _ = setup
+    rahul = login(client, "rahul")
+    assert upload(client, rahul, b"hello", "po.txt", "text/plain").status_code == 415
+    assert upload(client, rahul, b"", "po.png", "image/png").status_code == 400
+    fallback = upload(client, rahul, PNG + b"unreadable").json()                              # AI unavailable
+    assert fallback["read_ok"] is False and fallback["po"]["items"] == [] and fallback["po"]["status"] == "draft"
+    typed = client.post("/api/pos", json={"items": [{"name": "USB-C Charger", "quantity": 4}]}, headers=rahul).json()
+    assert typed["status"] == "draft" and not typed["has_document"]
+    empty = client.post("/api/pos", json={"items": []}, headers=rahul).json()
+    assert client.post(f"/api/pos/{empty['po_id']}/submit", headers=rahul).status_code == 422
+
+
+# ---- order journey: pay → ship → delivered / not received ----------------------------------------------
+
+def accepted_po(client, expected="2030-10-03"):
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    po = upload(client, rahul).json()["po"]
+    client.post(f"/api/pos/{po['po_id']}/submit", headers=rahul)
+    items = [{"name": "Wireless Headphones", "quantity": 2, "unit_price": "79.99"}, {"name": "Phone Case", "quantity": 3, "unit_price": "19.99"}]
+    return client.post(f"/api/pos/{po['po_id']}/accept", json={"items": items, "expected_date": expected}, headers=asha).json(), rahul, asha
+
+
+def kinds_for(client, headers, po_id):
+    return [i["kind"] for i in client.get("/api/whats-new", headers=headers).json()["items"] if i.get("po_id") == po_id]
+
+
+def test_full_order_journey(setup):
+    client, _, services = setup
+    po, rahul, asha = accepted_po(client)
+    pid, inv = po["po_id"], po["invoice_id"]
+    assert kinds_for(client, asha, pid) == ["po_send_invoice"]
+
+    assert client.post(f"/api/invoices/{inv}/pay", headers=rahul).status_code == 409        # draft: nothing to pay yet
+    client.post(f"/api/invoices/{inv}/send", headers=asha)
+    assert client.get(f"/api/pos/{pid}", headers=rahul).json()["status"] == "invoiced"
+    assert kinds_for(client, rahul, pid) == ["po_pay"]
+
+    paid = client.post(f"/api/invoices/{inv}/pay", headers=rahul).json()
+    assert paid["status"] == "PAID"
+    now = client.get(f"/api/pos/{pid}", headers=rahul).json()
+    assert now["status"] == "paid" and now["paid_at"]
+    assert kinds_for(client, asha, pid) == ["po_ship"]                                      # shop: ship it by the date
+    ship = next(i for i in client.get("/api/whats-new", headers=asha).json()["items"] if i.get("po_id") == pid)
+    assert ship["expected_date"] == "2030-10-03" and ship["days_left"] > 0
+
+    assert client.post(f"/api/pos/{pid}/ship", json={"carrier": "FedEx", "tracking_number": "1Z999"}, headers=rahul).status_code == 403
+    shipped = client.post(f"/api/pos/{pid}/ship", json={"carrier": "FedEx", "tracking_number": "1Z999"}, headers=asha).json()
+    assert shipped["status"] == "shipped" and shipped["tracking_number"] == "1Z999"
+    track = next(i for i in client.get("/api/whats-new", headers=rahul).json()["items"] if i.get("po_id") == pid)
+    assert track["kind"] == "po_shipped" and track["carrier"] == "FedEx"                   # date not reached: tracking
+
+    assert client.post(f"/api/pos/{pid}/delivered", headers=asha).status_code == 403         # only the customer confirms
+    done = client.post(f"/api/pos/{pid}/delivered", headers=rahul).json()
+    assert done["status"] == "delivered" and done["delivered_at"]
+    assert kinds_for(client, rahul, pid) == [] and kinds_for(client, asha, pid) == []        # nothing left to do
+    tools = [a["tool"] for a in services.appdb.recent_actions("u_rahul", limit=10)]
+    assert {"pay_invoice", "confirm_delivery", "submit_purchase_order"} <= set(tools)
+
+
+def test_delivery_date_reached_asks_the_customer(setup):
+    from datetime import date, timedelta
+    client, _, _ = setup
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+    po, rahul, asha = accepted_po(client, expected=tomorrow)
+    pid = po["po_id"]
+    client.post(f"/api/invoices/{po['invoice_id']}/send", headers=asha)
+    client.post(f"/api/invoices/{po['invoice_id']}/pay", headers=rahul)
+    client.post(f"/api/pos/{pid}/ship", json={"carrier": "DHL", "tracking_number": "JD014600"}, headers=asha)
+    # pretend the delivery date has come
+    client.app.state.services.appdb.update_po(pid, expected_date=date.today().isoformat())
+    assert kinds_for(client, rahul, pid) == ["po_confirm"]                                  # "has it arrived?"
+
+
+def test_not_received_goes_back_to_the_shop(setup):
+    client, _, _ = setup
+    po, rahul, asha = accepted_po(client)
+    pid = po["po_id"]
+    client.post(f"/api/invoices/{po['invoice_id']}/send", headers=asha)
+    client.post(f"/api/invoices/{po['invoice_id']}/pay", headers=rahul)
+    client.post(f"/api/pos/{pid}/ship", json={"carrier": "FedEx", "tracking_number": "1Z999"}, headers=asha)
+    missing = client.post(f"/api/pos/{pid}/not-received", json={"note": "Tracking says delivered but nothing came"}, headers=rahul).json()
+    assert missing["status"] == "not_received"
+    alert = next(i for i in client.get("/api/whats-new", headers=asha).json()["items"] if i.get("po_id") == pid)
+    assert alert["kind"] == "po_not_received" and "nothing came" in alert["text"]
+    reship = client.post(f"/api/pos/{pid}/ship", json={"carrier": "FedEx", "tracking_number": "1Z888"}, headers=asha).json()
+    assert reship["status"] == "shipped" and reship["tracking_number"] == "1Z888"             # shop ships again
+
+
+def test_order_steps_in_the_wrong_order_are_refused(setup):
+    client, _, _ = setup
+    po, rahul, asha = accepted_po(client)
+    pid = po["po_id"]
+    assert client.post(f"/api/pos/{pid}/ship", json={"carrier": "FedEx", "tracking_number": "1Z999"}, headers=asha).status_code == 409  # not paid
+    assert client.post(f"/api/pos/{pid}/delivered", headers=rahul).status_code == 409                                                  # not shipped
+    assert client.post(f"/api/invoices/{po['invoice_id']}/pay", headers=login(client, "priya")).status_code == 404                     # not hers

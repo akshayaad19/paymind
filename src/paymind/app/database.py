@@ -12,6 +12,10 @@ Tables:
   audit_log  one row per tool call the agent tries: who, which tool, the
              parameters, the outcome. System Search reads it to answer
              "what's the status of my last request?".
+  purchase_orders  customers' purchase orders, from request to delivery:
+             draft → submitted → accepted (draft invoice) → invoiced (sent) → paid
+             → shipped (carrier + tracking) → delivered, or not_received (reported by
+             the customer; the shop can ship again). Or rejected.
   dispute_reads  how many messages of each dispute's thread each user has
              seen, so the page can flag new messages from the other side.
 
@@ -69,6 +73,32 @@ CREATE TABLE IF NOT EXISTS audit_log (
     request_id      TEXT                    -- PayPal-Request-Id used for the call
 );
 CREATE INDEX IF NOT EXISTS audit_user_time ON audit_log (user_id, time DESC);
+
+CREATE TABLE IF NOT EXISTS purchase_orders (  -- customers' purchase orders (PayPal has no such concept)
+    po_id            TEXT PRIMARY KEY,         -- our id, e.g. PO-1001
+    user_id          TEXT NOT NULL REFERENCES users(user_id),
+    status           TEXT NOT NULL CHECK (status IN ('draft', 'submitted', 'accepted', 'rejected', 'invoiced',
+                                                     'paid', 'shipped', 'delivered', 'not_received')),
+    customer_po_ref  TEXT,                     -- the customer's own PO number, from the document
+    items            TEXT NOT NULL,            -- JSON: [{name, quantity, unit_price (optional)}]
+    requested_date   TEXT,                     -- delivery date the customer asked for
+    expected_date    TEXT,                     -- delivery date the shop committed to
+    notes            TEXT,
+    reject_reason    TEXT,
+    invoice_id       TEXT,                     -- PayPal invoice created on acceptance
+    document_path    TEXT,                     -- uploaded image/PDF (data/app/uploads/, git-ignored)
+    document_type    TEXT,
+    extracted        TEXT,                     -- JSON: what the AI read from the document, before edits
+    paid_at          TEXT,
+    carrier          TEXT,
+    tracking_number  TEXT,
+    shipped_at       TEXT,
+    delivered_at     TEXT,                     -- confirmed by the customer
+    not_received_at  TEXT,                     -- reported by the customer
+    not_received_note TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS dispute_reads (   -- how much of each dispute's thread each user has seen
     user_id     TEXT NOT NULL REFERENCES users(user_id),
@@ -129,9 +159,23 @@ class AppDatabase:
         self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._upgrade_purchase_orders()
         columns = {r[1] for r in self.conn.execute("PRAGMA table_info(dispute_reads)")}
         if "seen_count" not in columns:  # databases created before this column existed
             self.conn.execute("ALTER TABLE dispute_reads ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0")
+
+    def _upgrade_purchase_orders(self) -> None:
+        """Databases made before delivery tracking have fewer statuses and columns: rebuild, keeping the rows."""
+        sql = self.conn.execute("SELECT sql FROM sqlite_master WHERE name = 'purchase_orders'").fetchone()[0]
+        if "not_received" in sql:
+            return
+        old_cols = [r[1] for r in self.conn.execute("PRAGMA table_info(purchase_orders)")]
+        with self.conn:
+            self.conn.execute("ALTER TABLE purchase_orders RENAME TO purchase_orders_old")
+            self.conn.executescript(SCHEMA)
+            cols = ", ".join(old_cols)
+            self.conn.execute(f"INSERT INTO purchase_orders ({cols}) SELECT {cols} FROM purchase_orders_old")
+            self.conn.execute("DROP TABLE purchase_orders_old")
 
     def close(self) -> None:
         self.conn.close()
@@ -173,6 +217,52 @@ class AppDatabase:
     def list_users(self) -> list[User]:
         rows = self.conn.execute("SELECT user_id, name, email, role, payer_id FROM users ORDER BY role, name")
         return [User(**dict(r)) for r in rows]
+
+    # ---- purchase orders -----------------------------------------------------
+
+    PO_JSON = ("items", "extracted")
+
+    def _po(self, row) -> dict | None:
+        if row is None:
+            return None
+        po = dict(row)
+        for key in self.PO_JSON:
+            po[key] = json.loads(po[key]) if po[key] else ([] if key == "items" else None)
+        return po
+
+    def create_po(self, user_id: str, items: list[dict], **fields) -> dict:
+        number = self.conn.execute("SELECT COUNT(*) FROM purchase_orders").fetchone()[0] + 1001
+        po_id, now = f"PO-{number}", now_iso()
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO purchase_orders (po_id, user_id, status, customer_po_ref, items, requested_date, notes,
+                   document_path, document_type, extracted, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (po_id, user_id, fields.get("status", "draft"), fields.get("customer_po_ref"), json.dumps(items),
+                 fields.get("requested_date"), fields.get("notes"), fields.get("document_path"),
+                 fields.get("document_type"), json.dumps(fields["extracted"]) if fields.get("extracted") else None, now, now))
+        return self.get_po(po_id)
+
+    def get_po(self, po_id: str) -> dict | None:
+        return self._po(self.conn.execute("SELECT * FROM purchase_orders WHERE po_id = ?", (po_id,)).fetchone())
+
+    def list_pos(self, user_id: str | None = None, statuses: tuple[str, ...] | None = None) -> list[dict]:
+        sql, args = "SELECT * FROM purchase_orders WHERE 1=1", []
+        if user_id:
+            sql += " AND user_id = ?"; args.append(user_id)
+        if statuses:
+            sql += f" AND status IN ({','.join('?' * len(statuses))})"; args.extend(statuses)
+        return [self._po(r) for r in self.conn.execute(sql + " ORDER BY created_at DESC, po_id DESC", args)]
+
+    def update_po(self, po_id: str, **fields) -> dict:
+        allowed = {"status", "customer_po_ref", "items", "requested_date", "expected_date", "notes", "reject_reason", "invoice_id",
+                   "paid_at", "carrier", "tracking_number", "shipped_at", "delivered_at", "not_received_at", "not_received_note"}
+        sets = {k: (json.dumps(v) if k == "items" else v) for k, v in fields.items() if k in allowed}
+        if sets:
+            with self.conn:
+                self.conn.execute(f"UPDATE purchase_orders SET {', '.join(f'{k} = ?' for k in sets)}, updated_at = ? WHERE po_id = ?",
+                                  (*sets.values(), now_iso(), po_id))
+        return self.get_po(po_id)
 
     # ---- dispute message read markers -----------------------------------------
 

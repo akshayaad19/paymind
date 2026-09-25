@@ -328,3 +328,18 @@ def test_reset_command_copies_initial_db_when_server_is_down(tmp_path):
     working.write_bytes(b"changed")
     message = reset("http://127.0.0.1:9", working_db=working)  # nothing listens on port 9
     assert "copied" in message and working.read_bytes() == INITIAL_DB.read_bytes()
+
+
+def test_buyer_pays_a_sent_invoice(app, client):
+    sent = next(i for i in app.state.store.db.all("invoices") if i["status"] == "SENT")
+    before = float(client.get("/v1/reporting/balances").json()["balances"][0]["total_balance"]["value"])
+    paid = client.post(f"/mock/invoices/{sent['id']}/pay").json()
+    assert paid["status"] == "PAID" and paid["due_amount"]["value"] == "0.00"
+    capture = client.get(f"/v2/payments/captures/{paid['payments']['transactions'][-1]['payment_id']}").json()
+    assert capture["invoice_id"] == sent["id"] and capture["status"] == "COMPLETED"
+    after = float(client.get("/v1/reporting/balances").json()["balances"][0]["total_balance"]["value"])
+    assert after > before
+    again = client.post(f"/mock/invoices/{sent['id']}/pay")
+    assert again.status_code == 422 and again.json()["details"][0]["issue"] == "CANNOT_PAY_INVOICE"
+    draft = next(i for i in app.state.store.db.all("invoices") if i["status"] == "DRAFT")
+    assert client.post(f"/mock/invoices/{draft['id']}/pay").status_code == 422

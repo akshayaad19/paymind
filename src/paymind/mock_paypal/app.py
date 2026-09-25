@@ -162,6 +162,45 @@ def create_app(db_path: str | Path | None = None, initial_db: Path = INITIAL_DB,
             app.state.store = Store(Database(app.state.db_path))
         return {"status": "reset", "from": app.state.initial_db.name}
 
+    @app.post("/mock/invoices/{invoice_id}/pay", tags=["mock"])
+    async def buyer_pays_invoice(invoice_id: str):
+        """Simulates the customer paying an invoice on PayPal's own checkout page (not part of PayPal's
+        REST API). Records a PayPal payment from the recipient, marks the invoice paid, updates the ledger."""
+        from decimal import Decimal
+
+        from .store import amount_of, iso, money
+
+        async with app.state.lock:
+            store = app.state.store
+            store.db.begin()
+            try:
+                invoice = store.db.get("invoices", invoice_id)
+                if not invoice:
+                    raise PayPalError(404, "INVALID_RESOURCE_ID", f"No invoice found with ID {invoice_id}.")
+                if invoice["status"] not in ("SENT", "UNPAID", "PARTIALLY_PAID"):
+                    raise PayPalError(422, "CANNOT_PAY_INVOICE", f"Invoice is {invoice['status']}; only sent, unpaid invoices can be paid.")
+                email = ((invoice.get("primary_recipients") or [{}])[0].get("billing_info") or {}).get("email_address", "").lower()
+                payer = next((c for c in store.db.all("customers") if c["email"].lower() == email), None)
+                if not payer:
+                    raise PayPalError(422, "PAYER_NOT_FOUND", "No PayPal account for this invoice's recipient.")
+                due = amount_of(invoice["due_amount"])
+                capture = store.create_capture(due, payer["payer_id"], invoice_id=invoice_id)
+                invoice["payments"]["transactions"].append({"payment_id": capture["id"], "payment_date": capture["create_time"][:10],
+                                                            "method": "PAYPAL", "amount": money(due)})
+                invoice["payments"]["paid_amount"] = money(amount_of(invoice["payments"]["paid_amount"]) + due)
+                invoice["due_amount"] = money(Decimal("0"))
+                invoice["status"] = "PAID"
+                invoice["detail"]["metadata"]["last_update_time"] = iso(store.now())
+                store.db.put("invoices", invoice)
+                store.db.commit()
+            except PayPalError as exc:
+                store.db.rollback()
+                return JSONResponse(error_body(exc.status, exc.issue, exc.description), status_code=exc.status)
+            except Exception:
+                store.db.rollback()
+                raise
+        return invoice
+
     @app.get("/mock/summary", tags=["mock"])
     def summary():
         store = app.state.store

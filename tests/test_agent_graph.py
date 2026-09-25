@@ -382,3 +382,14 @@ def test_whats_new_kinds():
     assert items(asha, now + timedelta(days=5))[wei]["kind"] == "no_reply_yet"   # shop's offer, buyer silent
     resolved = [d["dispute_id"] for d in mock.state.store.db.all("disputes") if d["status"] == "RESOLVED"]
     assert not set(resolved) & set(items(asha))                             # closed cases never show
+
+
+def test_order_status_tool(world):
+    mock, _, appdb = world
+    rahul_po = appdb.create_po("u_rahul", [{"name": "Phone Case", "quantity": 3, "unit_price": None}], status="submitted")
+    appdb.update_po(rahul_po["po_id"], status="shipped", carrier="FedEx", tracking_number="1Z999", expected_date="2030-10-03")
+    appdb.create_po("u_priya", [{"name": "USB-C Charger", "quantity": 1, "unit_price": None}], status="submitted")
+    llm = ScriptedLLM([AIMessage("", tool_calls=[call("order_status", {})]),
+                       lambda msgs: AIMessage(json.dumps(tool_results(msgs)[-1]))])
+    rows = json.loads(make_agent(world, llm, []).send("u_rahul", "s1", "where is my order?").text)
+    assert [(r["po_id"], r["status"], r["tracking_number"]) for r in rows] == [(rahul_po["po_id"], "shipped", "1Z999")]  # only his

@@ -13,15 +13,27 @@ from typing import Any
 FIND_TOOLS = "find_tools"
 SYSTEM_SEARCH = "system_search"
 CHECK_UPDATES = "check_updates"
-BUILTINS = (FIND_TOOLS, SYSTEM_SEARCH, CHECK_UPDATES)
+ORDER_STATUS = "order_status"
+BUILTINS = (FIND_TOOLS, SYSTEM_SEARCH, CHECK_UPDATES, ORDER_STATUS)
 
 BUILTIN_SCHEMAS = [
+    {
+        "name": ORDER_STATUS,
+        "description": (
+            "Purchase orders and where they are: submitted, accepted, invoiced (waiting for payment), paid "
+            "(processing, with expected delivery date), shipped (carrier + tracking number), delivered, "
+            "not received, or declined. Customers see their own; the shop sees all. Use for 'where is my "
+            "order?', 'tracking number?', 'which orders do I need to ship?'."
+        ),
+        "parameters": {"type": "object", "properties": {"po_id": {"type": "string", "description": "Only this PO, e.g. PO-1001."}}},
+    },
     {
         "name": CHECK_UPDATES,
         "description": (
             "What needs this user's attention on open disputes: new_message (the other side wrote and it's unread), "
             "needs_reply (they wrote, no answer yet from this user) and no_reply_yet (this user wrote days ago and "
-            "is still waiting). Each item has the message text and its time. Use it for 'anything new?', "
+            "is still waiting); plus purchase orders: new_po (shop: a customer sent a PO) and po_accepted / "
+            "po_rejected (customer: the shop's decision, with expected delivery date). Each item has its text and time. Use it for 'anything new?', "
             "'any messages?', 'did the shop reply?'. Listing here doesn't mark messages as read; opening a "
             "dispute with show_dispute_details does."
         ),

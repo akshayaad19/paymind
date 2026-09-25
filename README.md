@@ -657,6 +657,38 @@ Tested: login, wrong password, no token, expired token, **forged token** (signed
 - **📜 Audit log**: the user's own actions.
 - **Sidebar**: who's logged in and their role (internal IDs like the payer_id are never shown to customers), and suggested questions for that role.
 
+**Invoices: download and send.** In PayMind data → Invoices, every row has **⬇ PDF** (a generated invoice: shop, bill-to, items, totals, amount due, status; built with fpdf2), and draft invoices have **Send** for accountants: the first click turns into *"Send to john@x.com?"*, the second sends it through PayPal and the status becomes *Awaiting payment*. Customers can download only their own invoices and can't send (404 / 403 from the server); every send is in the audit log.
+
+**Purchase orders, from request to delivery** (📦 Orders tab; stored in our app database, since PayPal has no purchase orders):
+
+```
+Customer uploads a photo/scan (handwritten is fine) or types a PO
+   → Gemini reads it into a form (PO number, items, quantities, prices, needed-by date, notes, anything unclear)
+   → the customer checks and corrects it → Send
+Shop reviews it next to the original image → sets prices + expected delivery date
+   → Accept: a draft PayPal invoice (referencing the PO) · or Decline with a reason
+Shop sends the invoice → customer pays with PayPal → Paid / processing          (status follows the invoice automatically)
+Shop ships with carrier + tracking number → customer sees tracking
+On the delivery date the customer is asked "Has it arrived?" → Delivered, or Not received → back to the shop to follow up / ship again
+```
+
+| Status | Customer sees | Shop sees |
+|---|---|---|
+| submitted | Sent · waiting for the shop | 📥 New PO: review |
+| accepted | Accepted · invoice coming | 🧾 Send the invoice |
+| invoiced | 💳 Pay the invoice | Awaiting payment |
+| paid | Paid · processing (expected date, days left) | 📦 Ship it by the date |
+| shipped | 🚚 Shipped · carrier + tracking; on the date: "Has it arrived?" | On its way |
+| delivered | Delivered | Delivered (confirmed by the customer) |
+| not_received | Reported | 🔴 Follow up, ship again |
+
+- Reading handwriting is never fully reliable, so the **customer always confirms** what was read; the AI also lists anything it wasn't sure of. If the AI is unavailable, the form is filled by hand.
+- Uploaded documents stay in `data/app/uploads/` (git-ignored). Only the owner and the shop can see a PO or its document; the shop never sees unsent drafts.
+- Paying uses a **simulated PayPal checkout** in the mock (`POST /mock/invoices/{id}/pay`); with real PayPal the customer pays on PayPal's own page. The payment appears in the ledger and balance (minus PayPal's fee).
+- Steps in the wrong order are refused (e.g. shipping before payment), and each step is in the audit log.
+- The assistant's `order_status` tool answers "where is my order?" / "which orders do I need to ship?", and `check_updates` includes every PO reminder.
+- Tested live: a generated handwritten PO photo was read correctly (PO number, all three items, the missing price left blank, needed-by date, delivery note), then taken all the way to Delivered.
+
 **Dispute conversations.** Each dispute has a message thread between the customer and the shop (PayPal's own dispute messages, not a separate chat system):
 - **PayMind data → Disputes**: statuses and reasons in plain words from the viewer's side (the shop sees *"Needs your response"* where the customer sees *"Waiting for the shop"*), and an **"N new"** label for unread messages from the other side. Click a dispute to open the conversation panel and reply; resolved disputes are read-only.
 - The mock records **who** sent each message (customer = BUYER, shop = SELLER), as real PayPal does from the login.

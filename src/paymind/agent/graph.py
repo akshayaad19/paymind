@@ -32,7 +32,7 @@ from langgraph.types import Command, interrupt
 from ..app.database import AppDatabase, User
 from .executor import Executor, ToolRegistry
 from .scope import check_access, filter_results
-from .tools import BUILTIN_SCHEMAS, BUILTINS, CHECK_UPDATES, FIND_TOOLS, SYSTEM_SEARCH, tool_schema
+from .tools import BUILTIN_SCHEMAS, BUILTINS, CHECK_UPDATES, FIND_TOOLS, ORDER_STATUS, SYSTEM_SEARCH, tool_schema
 from .validator import validate
 
 MAX_STEPS = 6          # LLM turns per user message
@@ -89,6 +89,7 @@ Rules:
 - If a tool returns an error, read it, fix the call and try once more. If it still fails, explain plainly.
 - The tools you were given were already chosen for this request. Call them directly, following each tool's example call; don't browse existing records or templates just to learn a format.
 - For 'anything new?' or 'any messages?', call check_updates. It returns new_message (they wrote, unread), needs_reply (they wrote, user hasn't answered), action_needed (PayPal says it's the user's turn, with a response deadline: always mention days left or overdue) and no_reply_yet (user wrote days ago, no answer; offer to send a reminder). Always say how long ago things happened (e.g. '2 days ago'), using today's date. When you show a dispute's messages, say who wrote each one.
+- For purchase orders ('where is my order?', tracking, delivery date, orders to ship), call order_status. Customers confirm delivery or report a missing order on the Orders tab.
 - If none of your tools fits, call find_tools. For "what can you do" or "status of my last request", call system_search.
 - For totals, add up the amounts yourself and state the number.
 - Messages to the other side of a dispute: if asked to write, word or format one, write it clearly and politely in the user's name (greeting, the facts they gave, a friendly close) and send it with the messaging tool; the user sees the exact text and approves it before it's sent. If they only ask for a draft, show the draft and don't send.
@@ -191,6 +192,17 @@ def build_graph(deps: Deps, checkpointer=None):
 
             items = whats_new(user, deps.executor, deps.appdb)
             return compact(items or "Nothing new: no new messages, no replies owed, nothing waiting."), []
+        if name == ORDER_STATUS:
+            from ..app.updates import sync_po_payment
+
+            pos = deps.appdb.list_pos(user_id=user.user_id) if user.is_customer else \
+                [p for p in deps.appdb.list_pos() if p["status"] != "draft"]
+            if args.get("po_id"):
+                pos = [p for p in pos if p["po_id"] == args["po_id"]]
+            keep = ("po_id", "status", "customer_po_ref", "items", "requested_date", "expected_date", "invoice_id",
+                    "paid_at", "carrier", "tracking_number", "shipped_at", "delivered_at", "not_received_note", "reject_reason")
+            rows = [{k: p.get(k) for k in keep} for p in (sync_po_payment(p, deps.executor, deps.appdb) for p in pos)]
+            return compact(rows or "No purchase orders found."), []
         if name == FIND_TOOLS:
             hits = deps.search(args.get("query", ""), role=user.role, k=TOP_K)
             return compact([{"tool": n, "description": d} for n, d in hits]), [n for n, _ in hits]
