@@ -28,3 +28,6 @@ qdrant_data/
 
 # Customer-uploaded documents (purchase orders): private, never committed
 data/app/uploads/
+
+# PayPal pages downloaded for RAG (copyrighted: fetched locally by `python -m paymind.ingest.docs fetch`, never committed)
+data/docs/paypal/

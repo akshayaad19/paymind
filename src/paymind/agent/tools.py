@@ -14,9 +14,29 @@ FIND_TOOLS = "find_tools"
 SYSTEM_SEARCH = "system_search"
 CHECK_UPDATES = "check_updates"
 ORDER_STATUS = "order_status"
-BUILTINS = (FIND_TOOLS, SYSTEM_SEARCH, CHECK_UPDATES, ORDER_STATUS)
+RAG_SEARCH = "rag_search"
+BUILTINS = (FIND_TOOLS, SYSTEM_SEARCH, CHECK_UPDATES, ORDER_STATUS, RAG_SEARCH)
 
 BUILTIN_SCHEMAS = [
+    {
+        "name": RAG_SEARCH,
+        "description": (
+            "Search policy documents: the shop's own policies (returns, refunds, shipping and delivery, purchase "
+            "orders, invoices and payment terms, disputes, support hours) and PayPal's (User Agreement, Purchase "
+            "Protection, Seller Protection, fees, privacy, acceptable use, developer docs on disputes and invoicing). "
+            "Use it for any question about rules, policies, time limits or fees. Returns the relevant passages with "
+            "their source; answer only from them."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The question, in plain words."},
+                "source": {"type": "string", "enum": ["shop", "paypal"],
+                           "description": "Only the shop's own policies, or only PayPal's. Leave out to search both."},
+            },
+            "required": ["query"],
+        },
+    },
     {
         "name": ORDER_STATUS,
         "description": (

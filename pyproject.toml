@@ -19,6 +19,8 @@ dependencies = [
     "pyjwt>=2.10",
     "fpdf2>=2.8",
     "python-multipart>=0.0.9",
+    "trafilatura>=2.0",
+    "langchain-text-splitters>=0.3",
 ]
 
 [project.optional-dependencies]

@@ -64,6 +64,22 @@ class ModelChain:
         raise last_error or RuntimeError("every model is out of daily quota")
 
 
+def qdrant_docs_search():
+    """The RAG knowledge base (Qdrant "docs" collection), traced in LangSmith."""
+    from langsmith import traceable
+
+    from ..retrieval.doc_index import search_docs
+    from ..retrieval.tool_index import get_client
+
+    client = get_client()
+
+    @traceable(name="rag_search", run_type="chain")
+    def search(query: str, k: int = 5, source: str | None = None):
+        return search_docs(client, query, k=k, source=source)
+
+    return search
+
+
 def gemini_llm_factory(models: list[str]):
     """Bind tools per call; if a model fails (overloaded, out of quota), try the next."""
     from langchain_google_genai import ChatGoogleGenerativeAI
@@ -98,6 +114,7 @@ def build_agent() -> PayMindAgent:
         executor=Executor(registry),
         registry=registry,
         appdb=AppDatabase(),
+        docs_search=qdrant_docs_search(),
     )
     return PayMindAgent(deps, SqliteSaver(sqlite3.connect(CHECKPOINTS, check_same_thread=False)))
 

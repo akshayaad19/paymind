@@ -1,0 +1,12 @@
+[
+  {"slug": "user-agreement", "topic": "general", "title": "PayPal User Agreement", "url": "https://www.paypal.com/us/legalhub/paypal/useragreement-full"},
+  {"slug": "purchase-protection", "topic": "disputes", "title": "PayPal Purchase Protection", "url": "https://www.paypal.com/us/legalhub/paypal/buyer-protection"},
+  {"slug": "seller-protection", "topic": "disputes", "title": "PayPal Seller Protection", "url": "https://www.paypal.com/us/legalhub/paypal/seller-protection"},
+  {"slug": "issue-a-refund", "topic": "refunds", "title": "How do I issue a refund?", "url": "https://www.paypal.com/us/cshelp/article/how-do-i-issue-a-refund-help101"},
+  {"slug": "developer-disputes", "topic": "disputes", "title": "Disputes (PayPal Developer)", "url": "https://developer.paypal.com/docs/disputes/"},
+  {"slug": "developer-invoicing", "topic": "invoices", "title": "Invoicing (PayPal Developer)", "url": "https://developer.paypal.com/docs/invoicing/"},
+  {"slug": "fees", "topic": "fees", "title": "PayPal Merchant Fees", "url": "https://www.paypal.com/us/business/paypal-business-fees"},
+  {"slug": "consumer-fees", "topic": "fees", "title": "PayPal Consumer Fees", "url": "https://www.paypal.com/us/digital-wallet/paypal-consumer-fees"},
+  {"slug": "privacy", "topic": "general", "title": "PayPal Privacy Statement", "url": "https://www.paypal.com/us/legalhub/paypal/privacy-full"},
+  {"slug": "acceptable-use", "topic": "general", "title": "PayPal Acceptable Use Policy", "url": "https://www.paypal.com/us/legalhub/paypal/acceptableuse-full"}
+]

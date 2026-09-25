@@ -729,6 +729,43 @@ When an answer is wrong, the trace shows where: the right tool missing from `too
 .venv/bin/uvicorn paymind.api.server:create_app --factory --port 8001        # PayMind → http://localhost:8001
 ```
 
+### Step 6: RAG tool (policy documents) ✅
+
+The brief's required **RAG Pipeline Tool**: the assistant answers policy questions from documents, citing them, instead of from memory.
+
+```
+OFFLINE   documents → split by heading, then ~500-token chunks (~50 overlap) → fastembed (BM25 + bge-small) → Qdrant "docs"
+RUNTIME   rag_search(query) → hybrid search → top 20 → cross-encoder reranker → top 5 → only the relevant ones
+          → the assistant answers ONLY from those passages and cites them, e.g. (Refunds and returns › Return window)
+```
+
+**Two sources** (15 documents, 335 chunks):
+
+| Source | What | In git? |
+|---|---|---|
+| `data/docs/shop/*.md` | The shop's own policies, written for this project: refunds and returns, shipping and delivery, purchase orders, invoices and payment terms, disputes and support hours. Consistent with how the app behaves | ✅ committed |
+| `data/docs/paypal/*.md` | 10 PayPal public pages: User Agreement, Purchase Protection, Seller Protection, merchant and consumer fees, privacy, acceptable use, refund help, developer docs on disputes and invoicing (~60,000 words) | ❌ **PayPal's copyrighted text** is downloaded locally by `fetch`, never committed; the list of URLs is in `data/docs/paypal_sources.json` |
+
+```bash
+.venv/bin/python -m paymind.ingest.docs fetch    # download PayPal's pages (trafilatura extracts the main text)
+.venv/bin/python -m paymind.ingest.docs build    # chunk + index into Qdrant "docs"
+.venv/bin/python -m paymind.ingest.docs search "How long do I have to return an item?"
+```
+
+**The reranker** (`Xenova/ms-marco-MiniLM-L-12-v2` via fastembed, 0.12 GB, CPU) reads the question and each candidate **together**, which hybrid search can't. Its score also tells "relevant" from "not covered": answerable questions score about +5 to +8, off-topic ones about −8 to −11 (threshold 0, `RAG_RELEVANT_SCORE`). Only relevant passages reach the LLM; if none, it says it couldn't find it.
+
+> **Bug found and fixed:** "What happens if my order never arrives?" ranked the right section ("If your order doesn't arrive") #1 in hybrid search, but the reranker pushed it to #4 (−3.2). The chunk's body never says "arrive"; its **heading** does, and the reranker was only given the body. It now gets the same *title › section + text* that was embedded: the right section scores +5.5.
+
+**Live answers** (Gemini, via the web app):
+
+| Question | Answer (cited) |
+|---|---|
+| What's your return window? | 30 days of delivery, unused, original packaging; services excluded (shop › Return window) |
+| If the item never arrives, am I protected? | PayPal's "Item Not Received" protection, if eligible (PayPal Purchase Protection) |
+| What's the weather in Chennai? | Declines: only orders, invoices and policies (nothing invented) |
+
+Each `rag_search` is a step in the LangSmith trace (query, passages, scores).
+
 ## Status
 
-Design complete; steps 1–4 done; step 5 (agent) in progress: 5a–5e done (app database, executor, validator, agent loop, web app with JWT auth and LangSmith tracing). Next: live re-test of write actions once Gemini quota resets, the RAG tool, the scaling evaluation, and the design document.
+Design complete; steps 1–6 done (parser, enricher, tool index, mock PayPal, agent + web app, RAG). Write actions re-tested live: "Send an invoice for $50 to john@x.com" now creates and sends the invoice in 12 s with two confirmations (it failed before the example calls were added). Next: the scaling evaluation, then the design document.

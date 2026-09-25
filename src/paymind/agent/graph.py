@@ -32,7 +32,7 @@ from langgraph.types import Command, interrupt
 from ..app.database import AppDatabase, User
 from .executor import Executor, ToolRegistry
 from .scope import check_access, filter_results
-from .tools import BUILTIN_SCHEMAS, BUILTINS, CHECK_UPDATES, FIND_TOOLS, ORDER_STATUS, SYSTEM_SEARCH, tool_schema
+from .tools import BUILTIN_SCHEMAS, BUILTINS, CHECK_UPDATES, FIND_TOOLS, ORDER_STATUS, RAG_SEARCH, SYSTEM_SEARCH, tool_schema
 from .validator import validate
 
 MAX_STEPS = 6          # LLM turns per user message
@@ -66,6 +66,7 @@ class Deps:
     executor: Executor
     registry: ToolRegistry
     appdb: AppDatabase
+    docs_search: Callable[..., list] | None = None  # docs_search(query, k, source) -> [DocHit]; RAG knowledge base
     llm_waits: tuple[float, ...] = LLM_WAITS
     sleep: Callable[[float], None] = time.sleep
     llm_errors: list[str] = field(default_factory=list)  # last LLM failures, for logs and tests
@@ -90,6 +91,7 @@ Rules:
 - The tools you were given were already chosen for this request. Call them directly, following each tool's example call; don't browse existing records or templates just to learn a format.
 - For 'anything new?' or 'any messages?', call check_updates. It returns new_message (they wrote, unread), needs_reply (they wrote, user hasn't answered), action_needed (PayPal says it's the user's turn, with a response deadline: always mention days left or overdue) and no_reply_yet (user wrote days ago, no answer; offer to send a reminder). Always say how long ago things happened (e.g. '2 days ago'), using today's date. When you show a dispute's messages, say who wrote each one.
 - For purchase orders ('where is my order?', tracking, delivery date, orders to ship), call order_status. Customers confirm delivery or report a missing order on the Orders tab.
+- Questions about rules, policies, time limits or fees: call rag_search and answer ONLY from the passages it returns, citing the source in brackets, e.g. (Refunds and returns › Return window). Say whether it's the shop's policy or PayPal's. If it finds nothing relevant, say you couldn't find it in the policies; never answer policy questions from memory.
 - If none of your tools fits, call find_tools. For "what can you do" or "status of my last request", call system_search.
 - For totals, add up the amounts yourself and state the number.
 - Messages to the other side of a dispute: if asked to write, word or format one, write it clearly and politely in the user's name (greeting, the facts they gave, a friendly close) and send it with the messaging tool; the user sees the exact text and approves it before it's sent. If they only ask for a draft, show the draft and don't send.
@@ -192,6 +194,15 @@ def build_graph(deps: Deps, checkpointer=None):
 
             items = whats_new(user, deps.executor, deps.appdb)
             return compact(items or "Nothing new: no new messages, no replies owed, nothing waiting."), []
+        if name == RAG_SEARCH:
+            if deps.docs_search is None:
+                return "The policy documents aren't available right now.", []
+            hits = [h for h in deps.docs_search(args.get("query", ""), k=5, source=args.get("source")) if h.relevant]
+            if not hits:
+                return "Nothing relevant found in the policy documents. Say you couldn't find it; don't guess.", []
+            return compact([{"source": f"{h.title}{' › ' + h.section if h.section else ''}",
+                             "from": "the shop's own policy" if h.source == "shop" else "PayPal",
+                             **({"url": h.url} if h.url else {}), "text": h.text} for h in hits]), []
         if name == ORDER_STATUS:
             from ..app.updates import sync_po_payment
 
