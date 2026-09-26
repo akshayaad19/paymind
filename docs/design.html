@@ -19,7 +19,7 @@
   .lead { font-size: 11.5pt; color: var(--muted); margin: 0 0 5mm; }
   .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm; margin: 5mm 0; }
   .kpi { border: 1px solid var(--line); border-radius: 3mm; padding: 3mm 3.5mm; background: #fff; }
-  .kpi b { display: block; font-size: 17pt; color: var(--accent); line-height: 1.1; }
+  .kpi > b { display: block; font-size: 17pt; color: var(--accent); line-height: 1.1; }
   .kpi span { font-size: 8.6pt; color: var(--muted); }
   table { width: 100%; border-collapse: collapse; margin: 1.5mm 0 3.5mm; font-size: 9pt; break-inside: auto; }
   tr { break-inside: avoid; }
@@ -54,11 +54,29 @@
   <div style="font-size:9pt;color:var(--muted)">Akshayaa D · github.com/akshayaad19/paymind · September 2026</div>
 </div>
 
+<h3 style="margin-top:6mm">What is PayMind?</h3>
+<p>PayMind is a <b>seller's portal with an AI assistant</b> for a shop that takes payments through PayPal. Instead of clicking
+through PayPal's many screens and APIs, the shop's staff and its customers simply <b>ask in plain English</b>:
+<i>"send an invoice for $50 to john@x.com"</i>, <i>"what were my sales last month?"</i>, <i>"I want a refund for my
+headphones"</i>. The assistant finds the right PayPal action, fills in the details, asks for confirmation when something will
+change, does it, and shows what really happened.</p>
+<div class="two" style="margin-bottom:2mm">
+  <div class="box" style="background:var(--soft);margin:0"><b>The accountant (Asha)</b> sees the whole shop: sales and
+  balance, invoices, disputes and purchase orders. She refunds or replaces, chases overdue invoices and ships orders, from the
+  chat or the screens.</div>
+  <div class="box" style="background:var(--soft);margin:0"><b>Customers (Rahul, Priya)</b> see only their own purchases,
+  invoices and cases. They pay invoices, send purchase orders (even handwritten), report problems, attach photos, ask for a
+  refund or replacement, and close their own cases.</div>
+</div>
+<p>Behind the scenes it is built for scale: PayPal alone has over a hundred APIs and a real business may have thousands, so the
+assistant never sees them all. For each message it <b>searches</b> for the few most relevant tools; <b>code</b> checks every
+action, the user <b>confirms</b> anything that changes data, and <b>every step is traced</b> in LangSmith.</p>
+
 <div class="kpis">
   <div class="kpi"><b>112</b><span>PayPal APIs as searchable tool cards, from the Postman collection</span></div>
   <div class="kpi"><b>100%</b><span>right tool in the top 5 at <b>1,012 tools</b> (with 900 look-alike distractors)</span></div>
   <div class="kpi"><b>~20 ms</b><span>per tool search (hybrid BM25 + dense, RRF)</span></div>
-  <div class="kpi"><b>234</b><span>automated tests, run without any LLM</span></div>
+  <div class="kpi"><b>236</b><span>automated tests, run without any LLM</span></div>
 </div>
 
 <div class="box key">
@@ -125,7 +143,7 @@ case), chase overdue invoices, and turn handwritten purchase orders into invoice
   <tr><td class="layer">Front end</td><td>Plain HTML / CSS / JavaScript</td><td>Chat (streaming reader), account data with customer filter, orders, audit log; light and dark mode.</td></tr>
   <tr><td class="layer">Documents</td><td><code>fpdf2</code></td><td>Invoice PDFs.</td></tr>
   <tr><td class="layer">Observability</td><td><b>LangSmith</b> (<code>@traceable</code> spans + LangGraph auto-tracing)</td><td>One trace per message; custom spans for tool search, validation, PayPal calls and RAG (section 10).</td></tr>
-  <tr><td class="layer">Testing</td><td><b>pytest</b>, FastAPI <code>TestClient</code>, <code>httpx.MockTransport</code>, a scripted fake LLM</td><td>234 tests across parser, enricher, index, mock, executor, validator, agent graph, API and RAG, with no LLM calls.</td></tr>
+  <tr><td class="layer">Testing</td><td><b>pytest</b>, FastAPI <code>TestClient</code>, <code>httpx.MockTransport</code>, a scripted fake LLM</td><td>236 tests across parser, enricher, index, mock, executor, validator, agent graph, API and RAG, with no LLM calls.</td></tr>
 </table>
 </section>
 

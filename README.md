@@ -9,7 +9,7 @@ A scalable tool-calling agent for PayPal. Users chat in plain English ("Send an 
 | 📄 **Design document** | [docs/PayMind_Design.pdf](docs/PayMind_Design.pdf): architecture, agent structure, routing, state, error handling, observability, scaling results, framework choice |
 | 🎥 **Demo video** | _link to be added_ |
 | 📈 **Scaling result** | At **1,012 tools** (112 real + 900 deliberately confusing look-alikes), the right tool is in the top 5 for **100%** of test questions, at ~20 ms per search ([details](#step-7-scaling-evaluation-)) |
-| ✅ **Tests** | 234, run without any LLM (`.venv/bin/pytest`) |
+| ✅ **Tests** | 236, run without any LLM (`.venv/bin/pytest`) |
 
 ## Architecture
 
@@ -46,7 +46,7 @@ cp .env.example .env        # add GOOGLE_API_KEY, JWT_SECRET (32+ random chars),
 .venv/bin/uvicorn paymind.mock_paypal.app:create_app --factory --port 8000   # mock PayPal
 .venv/bin/uvicorn paymind.api.server:create_app --factory --port 8001        # app → http://localhost:8001
 
-.venv/bin/pytest                                   # 234 tests, no LLM needed
+.venv/bin/pytest                                   # 236 tests, no LLM needed
 .venv/bin/python -m paymind.retrieval.eval_tools   # scaling evaluation (local, no LLM)
 .venv/bin/python -m paymind.mock_paypal.reset      # back to the demo data
 ```
