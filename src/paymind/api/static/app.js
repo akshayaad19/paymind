@@ -298,7 +298,10 @@ const DISPUTE_REASONS = {
 function disputeReason(d) { return DISPUTE_REASONS[d.reason] || String(d.reason || "").replaceAll("_", " ").toLowerCase(); }
 function disputeStatus(d) {
   const shop = state.user.role === "accountant";
-  if (d.refund_request) return shop ? { text: "Refund requested by customer", kind: "error" } : { text: "Refund requested", kind: "waiting" };
+  if (d.refund_request) {
+    const what = d.refund_request.wants === "replacement" ? "Replacement" : "Refund";
+    return shop ? { text: `${what} requested by customer`, kind: "error" } : { text: `${what} requested`, kind: "waiting" };
+  }
   switch (d.status) {
     case "WAITING_FOR_SELLER_RESPONSE": return shop ? { text: "Needs your response", kind: "error" } : { text: "Waiting for the shop", kind: "waiting" };
     case "WAITING_FOR_BUYER_RESPONSE": return shop ? { text: "Waiting for the customer", kind: "waiting" } : { text: "Needs your response", kind: "error" };
@@ -339,7 +342,7 @@ function paidHow(t) {
 function paidOn(inv) { return inv.payments?.transactions?.[0]?.payment_date; }
 
 // Accountants can narrow every table to one customer (name, email or payer ID): their disputes,
-// invoice history (with when each was paid) and payments, to check a claim like "charged twice".
+// invoice history (with when each was paid) and payments, to check a claim like "you charged me for two, I ordered one".
 const CUSTOMER_FIELDS = {
   disputes: (d) => [buyerOf(d).name, buyerOf(d).email, buyerOf(d).payer_id],
   invoices: (i) => [recipientName(i), recipientOf(i)],
@@ -546,7 +549,12 @@ function whatsNewItem(i) {
   const texts = {
     action_needed: [offer || `🔴 Action needed · ${esc(i.with)}${due}`, "Open", "open"],
     new_message: [`📬 New message from ${esc(i.with)} · ${timeAgo(i.time)}${due}`, "Open", "open"],
-    refund_requested: [`💸 ${esc(i.with)} asked for a full refund (${money(i.refund_request?.amount || i.amount)}) · ${timeAgo(i.time)}${due}`, "Resolve", "open"],
+    case_closed: [state.user.role === "accountant"
+      ? `✅ ${esc(i.with)}'s case was closed · ${esc(i.outcome)}${i.amount_refunded ? ` (${money(i.amount_refunded)})` : ""} · ${timeAgo(i.time)}`
+      : `✅ The shop resolved your case · ${esc(i.outcome)}${i.amount_refunded ? ` (${money(i.amount_refunded)})` : ""}${i.tracking_number ? ` · ${esc(i.carrier || "")} ${esc(i.tracking_number)}` : ""} · ${timeAgo(i.time)}`, "View", "open"],
+    refund_requested: [i.refund_request?.wants === "replacement"
+      ? `🔁 ${esc(i.with)} asked for a replacement · ${timeAgo(i.time)}${due}`
+      : `💸 ${esc(i.with)} asked for a refund of ${money(i.refund_request?.amount || i.amount)} · ${timeAgo(i.time)}${due}`, "Resolve", "open"],
     needs_reply: [`✍️ ${esc(i.with)} wrote ${timeAgo(i.time)} · waiting for your reply${due}`, "Reply", "open"],
     no_reply_yet: [`⏳ You wrote ${timeAgo(i.time)} · no reply yet from ${esc(i.with)}`, "Send a reminder", "remind"],
     new_po: [`📥 New purchase order from ${esc(i.with)} · ${timeAgo(i.time)}${i.requested_date ? ` · needed by ${esc(fmtDate(i.requested_date))}` : ""}`, "Review", "po"],
@@ -559,6 +567,10 @@ function whatsNewItem(i) {
     po_shipped: [`🚚 Your order has shipped${i.tracking_number ? ` · ${esc(i.carrier || "")} ${esc(i.tracking_number)}` : ""} · expected ${esc(fmtDate(i.expected_date))}`, "Track", "po"],
     po_confirm: [`📦 Has your order arrived? It was expected ${esc(fmtDate(i.expected_date))}`, "Confirm", "po"],
   };
+  if (i.kind === "refunded") {
+    return `<div class="wn-item"><div><div class="what">💸 ${esc(i.with)} refunded you ${money(i.amount)} · ${timeAgo(i.time)}</div>
+      ${i.text ? `<div class="quote">“${esc(i.text)}”</div>` : ""}<div class="quote">Refunds usually reach your account within a few days.</div></div></div>`;
+  }
   if (i.kind === "invoice_overdue" || i.kind === "invoice_due") {
     const shop = state.user.role === "accountant";
     const when = i.days_left < 0 ? `<span class="amount-neg">overdue by ${-i.days_left} day${i.days_left === -1 ? "" : "s"}</span>`
@@ -999,7 +1011,7 @@ function resolveChoice() { return document.querySelector('input[name="resolve"]:
 function updateResolveBox() {
   const choice = resolveChoice(), amount = threadState?.dispute?.dispute_amount;
   $$(".resolve-fields [data-for]").forEach((el) => { el.hidden = el.dataset.for !== choice; });
-  $("#resolve-confirm").textContent = { refund: `Refund ${money(amount)}`, offer: "Send offer" }[choice];
+  $("#resolve-confirm").textContent = { refund: `Refund ${money(amount)}`, offer: "Send offer", replacement: "Send replacement" }[choice];
   $("#resolve-confirm").dataset.armed = "";
 }
 
@@ -1008,6 +1020,8 @@ function openResolve() {
   $("#resolve-open").hidden = true;
   $("#thread-form").hidden = true;
   $("#resolve-refund-text").textContent = `Give ${threadState.dispute.disputed_transactions?.[0]?.buyer?.name || "the customer"} their ${money(threadState.dispute.dispute_amount)} back; the dispute closes`;
+  const wants = threadState.dispute.refund_request?.wants;  // start on what the customer asked for
+  if (wants) document.querySelector(`input[name="resolve"][value="${wants === "replacement" ? "replacement" : "refund"}"]`).checked = true;
   updateResolveBox();
 }
 
@@ -1023,17 +1037,24 @@ async function confirmResolve() {
     body.amount = $("#resolve-amount").value.trim();
     if (!body.amount || isNaN(Number(body.amount))) { $("#resolve-amount").focus(); return toast("Enter the amount you're offering."); }
   }
+  if (choice === "replacement") {
+    body.carrier = $("#resolve-carrier").value.trim();
+    body.tracking_number = $("#resolve-tracking").value.trim();
+    if (body.carrier.length < 2) { $("#resolve-carrier").focus(); return toast("Add the carrier."); }
+    if (body.tracking_number.length < 3) { $("#resolve-tracking").focus(); return toast("Add the tracking number."); }
+  }
   if (!btn.dataset.armed) {  // second click confirms: money and case outcomes are hard to undo
     btn.dataset.armed = "1";
     btn.textContent = choice === "refund" ? `Confirm refund of ${money(threadState.dispute.dispute_amount)}?`
-      : `Confirm offer of ${money({ value: body.amount })}?`;
+      : choice === "replacement" ? "Confirm: send replacement?" : `Confirm offer of ${money({ value: body.amount })}?`;
     return;
   }
   btn.disabled = true;
   try {
     const res = await api(`/api/disputes/${encodeURIComponent(openDisputeId)}/resolve`, { method: "POST", body: JSON.stringify(body) });
-    toast({ refund: "Refunded. The dispute is resolved.", offer: "Offer sent to the customer." }[choice]);
-    ["#resolve-amount", "#resolve-note"].forEach((s) => { $(s).value = ""; });
+    toast({ refund: "Refunded. The dispute is resolved.", offer: "Offer sent to the customer.",
+      replacement: "Replacement recorded. The customer has the tracking number; the dispute is resolved." }[choice]);
+    ["#resolve-amount", "#resolve-note", "#resolve-carrier", "#resolve-tracking"].forEach((s) => { $(s).value = ""; });
     $("#resolve-box").hidden = true;
     renderThread(res);
     loadData(); loadWhatsNew();
@@ -1045,20 +1066,113 @@ function renderThread(res) {
   threadState = res;
   const shopView = state.user.role === "accountant";
   $("#resolve-open").hidden = !(shopView && res.can_resolve && $("#resolve-box").hidden);
+  $("#case-close").hidden = shopView || !res.can_reply;
+  $("#case-close").dataset.armed = ""; $("#case-close").textContent = "✅ Mark as resolved";
   const d = res.dispute, s = disputeStatus(d), mine = state.user.role === "accountant" ? "SELLER" : "BUYER";
   $("#drawer-title").textContent = `${disputeReason(d)} · ${money(d.dispute_amount)}`;
   $("#drawer-sub").innerHTML = `<span class="mono">${esc(d.dispute_id)}</span><span class="badge ${s.kind}">${esc(s.text)}</span>` +
     (state.user.role === "accountant" ? `<span>with ${esc(buyerOf(d).name || "customer")}</span>` : "");
   const rr = d.refund_request;
-  const requestLine = rr ? `<div class="refund-request">💸 ${shopView ? `${esc(buyerOf(d).name || "The customer")} asked` : "You asked"} for a full refund of <b>${money(rr.amount)}</b> · ${shortDate(rr.time)}${shopView ? " · use <b>Resolve…</b> to refund or make an offer" : " · waiting for the shop"}</div>` : "";
-  $("#thread").innerHTML = requestLine + res.messages.map((m) => `
+  const asked = rr?.wants === "replacement" ? "for a <b>replacement</b>" : `for a refund of <b>${rr ? money(rr.amount) : ""}</b>`;
+  const requestLine = rr ? `<div class="refund-request">${rr.wants === "replacement" ? "🔁" : "💸"} ${shopView ? `${esc(buyerOf(d).name || "The customer")} asked` : "You asked"} ${asked} · ${shortDate(rr.time)}${shopView ? " · use <b>Resolve…</b>" : " · waiting for the shop"}</div>` : "";
+  const o = d.dispute_outcome || {};
+  const ended = { RESOLVED_WITH_REPLACEMENT: `🔁 Replacement sent · ${esc(o.carrier || "")} ${esc(o.tracking_number || "")}`,
+    RESOLVED_BUYER_FAVOUR: `💸 Refunded ${o.amount_refunded ? money(o.amount_refunded) : ""}`,
+    RESOLVED_WITH_PAYOUT: `🤝 Settled with the offer ${o.amount_refunded ? money(o.amount_refunded) : ""}`,
+    CANCELED_BY_BUYER: "✅ Marked resolved by the customer" }[o.outcome_code];
+  const outcome = d.status === "RESOLVED" && ended ? `<div class="refund-request">Case closed · ${ended}</div>` : "";
+  const offerHint = d.offer && !shopView && res.can_reply
+    ? `<div class="refund-request">🤝 The shop offered <b>${money(d.offer.offer_amount)}</b> to settle this. To accept or decline, tell the assistant in <b>Chat</b> (e.g. “accept the offer”), so it's recorded.</div>` : "";
+  const photos = (res.photos || []).length ? `<div class="photo-strip">${res.photos.map((ph) =>
+    `<a class="photo" data-photo="${esc(ph.photo_id)}" title="${ph.by === mine ? "You" : "They"} · ${shortDate(ph.time)}"><span class="muted small">Loading…</span></a>`).join("")}</div>` : "";
+  $("#thread").innerHTML = purchaseBox(res.purchase, shopView && res.can_reply) + requestLine + offerHint + outcome + photos + res.messages.map((m) => `
     <div class="tmsg ${m.from === mine ? "mine" : ""}">
       <div class="who">${esc(m.from === mine ? "You" : m.name)} · ${shortDate(m.time)}</div>
       <div class="text">${esc(m.text)}</div>
     </div>`).join("") || `<p class="muted">No messages yet.</p>`;
   $("#thread").scrollTop = $("#thread").scrollHeight;
+  loadPhotos(d.dispute_id);
   $("#thread-form").hidden = !res.can_reply || !$("#resolve-box").hidden;
   $("#thread-closed").hidden = res.can_reply;
+}
+
+const SHIP_STATUS = { SHIPPED: "shipped · in transit", ON_HOLD: "on hold", DELIVERED: "delivered", CANCELLED: "shipment cancelled" };
+const PAID_HOW = { invoice: "🧾 Invoice", "in store": "🏬 In store", "online store": "🌐 Online store" };
+
+// What the case is about, and where it is: the items bought, how and when they were paid, and the
+// latest shipment (the shop can record one here).
+function purchaseBox(p, canTrack) {
+  if (!p) return "";
+  const items = p.items.length ? esc(p.items.join(", ")) : "Purchase";
+  const refunded = Number(p.refunded) > 0 ? ` · ${money({ value: p.refunded })} refunded` : "";
+  const ship = p.shipments[0];
+  const shipLine = ship
+    ? `📦 ${esc(ship.carrier)} <span class="mono">${esc(ship.tracking_number)}</span> · ${esc(SHIP_STATUS[ship.status] || ship.status)} · shipped ${esc(fmtDate(ship.shipment_date))}`
+    : p.paid_how === "in store" ? "🏬 Collected in store" : "📦 No shipment recorded";
+  const form = canTrack && p.paid_how !== "in store" ? `
+    <details class="track-form"><summary>${ship ? "Update tracking" : "Add tracking"}</summary>
+      <div class="track-fields">
+        <input id="track-carrier" placeholder="Carrier, e.g. Blue Dart" value="${esc(ship?.carrier || "")}">
+        <input id="track-number" placeholder="Tracking number" value="${esc(ship?.tracking_number || "")}">
+        <select id="track-status">${Object.entries(SHIP_STATUS).map(([k, v]) => `<option value="${k}" ${ship?.status === k ? "selected" : ""}>${v}</option>`).join("")}</select>
+        <button class="btn btn-primary btn-sm" type="button" id="track-save">Save</button>
+      </div>
+    </details>` : "";
+  return `<div class="purchase-box"><div class="muted small">About this purchase</div>
+    <div><b>${items}</b> · ${money({ value: p.amount })}${refunded}</div>
+    <div class="muted small">${PAID_HOW[p.paid_how] || esc(p.paid_how)} · paid ${shortDate(p.date)} · payment <span class="mono">${esc(p.payment_id)}</span></div>
+    <div class="ship-line">${shipLine}</div>${form}</div>`;
+}
+
+async function closeCase() {
+  const btn = $("#case-close");
+  if (!btn.dataset.armed) { btn.dataset.armed = "1"; btn.textContent = "Close this case? Click again"; return; }
+  btn.disabled = true;
+  try {
+    renderThread(await api(`/api/disputes/${encodeURIComponent(openDisputeId)}/close`, { method: "POST", body: JSON.stringify({ message: "I'm happy with how this was sorted out, so I'm closing this case." }) }));
+    toast("Case closed. The shop has been told.");
+    loadData(); loadWhatsNew();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+  finally { btn.disabled = false; }
+}
+
+async function saveTracking() {
+  const body = { carrier: $("#track-carrier").value.trim(), tracking_number: $("#track-number").value.trim(), status: $("#track-status").value };
+  if (body.carrier.length < 2) { $("#track-carrier").focus(); return toast("Add the carrier."); }
+  if (body.tracking_number.length < 3) { $("#track-number").focus(); return toast("Add the tracking number."); }
+  try {
+    renderThread(await api(`/api/disputes/${encodeURIComponent(openDisputeId)}/tracking`, { method: "POST", body: JSON.stringify(body) }));
+    toast("Tracking saved. The customer can see it in the case.");
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+}
+
+// Photos need the login token, so each is fetched and shown from a local blob URL.
+async function loadPhotos(disputeId) {
+  for (const el of $$("#thread [data-photo]")) {
+    try {
+      const res = await fetch(`/api/disputes/${encodeURIComponent(disputeId)}/photos/${encodeURIComponent(el.dataset.photo)}`,
+        { headers: { Authorization: `Bearer ${state.token}` } });
+      if (!res.ok) throw new Error();
+      const url = URL.createObjectURL(await res.blob());
+      el.href = url; el.target = "_blank";
+      el.innerHTML = `<img src="${url}" alt="Attached photo">`;
+    } catch { el.innerHTML = `<span class="muted small">Photo unavailable</span>`; }
+  }
+}
+
+async function attachPhoto(file) {
+  if (!file || !openDisputeId) return;
+  if (file.size > 8 * 1024 * 1024) return toast("The photo is larger than 8 MB.");
+  const form = new FormData();
+  form.append("file", file);
+  toast("Uploading photo…");
+  const res = await fetch(`/api/disputes/${encodeURIComponent(openDisputeId)}/photos`, { method: "POST", body: form,
+    headers: { Authorization: `Bearer ${state.token}` } });
+  if (res.status === 401) return logout("Your session has expired. Please log in again.");
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) return toast(body.detail || "Upload failed.");
+  toast("Photo attached. The shop can see it.");
+  renderThread(body);
 }
 
 async function openDispute(id) {
@@ -1172,7 +1286,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#po-drawer").addEventListener("input", (e) => { if (e.target.closest("#po-items")) updateTotal(); });
   $("#drawer-close").addEventListener("click", closeDispute);
+  $("#thread-photo").addEventListener("change", (e) => { attachPhoto(e.target.files[0]); e.target.value = ""; });
+  $("#thread").addEventListener("click", (e) => { if (e.target.id === "track-save") saveTracking(); });
   $("#resolve-open").addEventListener("click", openResolve);
+  $("#case-close").addEventListener("click", closeCase);
   $("#resolve-cancel").addEventListener("click", closeResolve);
   $("#resolve-confirm").addEventListener("click", confirmResolve);
   $("#resolve-options").addEventListener("change", updateResolveBox);

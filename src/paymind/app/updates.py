@@ -75,7 +75,7 @@ def open_refund_request(dispute: dict, requests: dict[str, dict]) -> dict | None
     request = requests.get(dispute.get("dispute_id"))
     if not request or dispute.get("status") not in ("WAITING_FOR_SELLER_RESPONSE", "OPEN"):
         return None
-    return {k: request[k] for k in ("amount", "message", "time")}
+    return {k: request.get(k, "refund") if k == "wants" else request[k] for k in ("amount", "wants", "message", "time")}
 
 
 def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, waiting_days: int = WAITING_DAYS) -> list[dict[str, Any]]:
@@ -83,7 +83,10 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
 
       invoice_overdue / invoice_due  unpaid invoices: past their due date (both sides; the shop sees
                     which customer owes), or due within INVOICE_SOON_DAYS days (customer)
-      refund_requested  (shop) the customer formally asked for a full refund; stays until the shop
+      case_closed   the OTHER side closed a case in the last CLOSED_DAYS days (refund, offer accepted, replacement,
+                    or the customer marked it resolved); shown until this user opens the case
+      refunded      (customer) the shop refunded one of their payments in the last CLOSED_DAYS days
+      refund_requested  (shop) the customer formally asked for a refund of the disputed amount; stays until the shop
                     refunds or makes an offer
       new_message   the other side wrote and the user hasn't seen it
       needs_reply   the other side wrote, the user has seen it, but hasn't answered
@@ -107,10 +110,14 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
     if not listed.ok:
         raise RuntimeError(listed.error)
     reads = appdb.dispute_reads(user.user_id)
+    read_at = appdb.dispute_read_times(user.user_id)
     requests = appdb.refund_requests()
     items = []
     for row in filter_results(user, "list_disputes", listed.body)["items"]:
         if row.get("status") == "RESOLVED":
+            closed = closed_by_other_side(user, row, executor, read_at.get(row["dispute_id"]), now)
+            if closed:
+                items.append(closed)
             continue
         full = executor.execute("show_dispute_details", {"dispute_id": row["dispute_id"]}, caller=user)
         if not full.ok:
@@ -149,14 +156,76 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
             items.append({**base, "kind": "no_reply_yet", "days": (now - _parse(last["time_posted"])).days})
     items += po_updates(user, appdb, now, executor)
     items += invoice_updates(user, executor, now)
-    order = {"invoice_overdue": 1, "invoice_due": 2, "refund_requested": 0, "new_message": 0, "action_needed": 1, "po_not_received": 1, "po_confirm": 1, "po_ship": 1, "new_po": 1,
+    if user.is_customer:
+        items += refund_updates(user, executor, now)
+    order = {"case_closed": 0, "refunded": 1, "invoice_overdue": 1, "invoice_due": 2, "refund_requested": 0, "new_message": 0, "action_needed": 1, "po_not_received": 1, "po_confirm": 1, "po_ship": 1, "new_po": 1,
              "po_pay": 2, "po_send_invoice": 2, "needs_reply": 2, "po_shipped": 3, "po_accepted": 3, "po_rejected": 3, "no_reply_yet": 4}
     # overdue / closest deadline first, then by kind, then oldest first
     return sorted(items, key=lambda i: (i.get("days_left") is None, i.get("days_left") or 0, order[i["kind"]], i["time"]))
 
 
+CLOSED_DAYS = 14  # how long a closed case or a refund stays in What's new
+
+OUTCOMES = {  # outcome_code -> how it ended, in words (the amount is added where there is one)
+    "RESOLVED_BUYER_FAVOUR": "refunded",
+    "RESOLVED_WITH_PAYOUT": "settled with the offer",
+    "RESOLVED_WITH_REPLACEMENT": "replacement sent",
+    "CANCELED_BY_BUYER": "marked resolved by the customer",
+    "RESOLVED_SELLER_FAVOUR": "closed in the shop's favour",
+}
+
+
+def closed_by_other_side(user: User, row: dict, executor: Executor, last_read: str | None, now) -> dict | None:
+    """A case the other side closed recently that this user hasn't opened since."""
+    closed_at = row.get("update_time") or ""
+    if not closed_at or (now - _parse(closed_at)).days > CLOSED_DAYS or (last_read and last_read >= closed_at):
+        return None
+    full = executor.execute("show_dispute_details", {"dispute_id": row["dispute_id"]}, caller=user)
+    outcome = (full.body or {}).get("dispute_outcome") or {} if full.ok else {}
+    mine = "BUYER" if user.is_customer else "SELLER"
+    if not outcome.get("closed_by") or outcome["closed_by"] == mine:
+        return None
+    tx = (row.get("disputed_transactions") or [{}])[0]
+    other = ((tx.get("seller") if user.is_customer else tx.get("buyer")) or {}).get("name") or "the other side"
+    return {"kind": "case_closed", "dispute_id": row["dispute_id"], "reason": row.get("reason"), "amount": row.get("dispute_amount"),
+            "with": other, "time": closed_at, "text": "", "outcome": OUTCOMES.get(outcome.get("outcome_code"), "closed"),
+            "amount_refunded": outcome.get("amount_refunded"), "carrier": outcome.get("carrier"),
+            "tracking_number": outcome.get("tracking_number")}
+
+
+def refund_updates(user: User, executor: Executor, now) -> list[dict[str, Any]]:
+    """Refunds the shop made on this customer's payments in the last CLOSED_DAYS days."""
+    from datetime import timedelta
+
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    found = executor.execute("list_transactions", {"start_date": (now - timedelta(days=CLOSED_DAYS)).strftime(fmt),
+                                                   "end_date": now.strftime(fmt), "transaction_type": "T1107"}, caller=user)
+    if not found.ok:
+        return []
+    items = []
+    for r in found.body.get("transaction_details", []):
+        if (r.get("payer_info") or {}).get("payer_id") != user.payer_id:
+            continue
+        info = r["transaction_info"]
+        refund = executor.execute("show_refund_details", {"refund_id": info["transaction_id"]}, caller=user)
+        note = (refund.body or {}).get("note_to_payer") if refund.ok else None
+        items.append({"kind": "refunded", "refund_id": info["transaction_id"], "time": info["transaction_initiation_date"],
+                      "amount": {"currency_code": "USD", "value": info["transaction_amount"]["value"].lstrip("-")},
+                      "with": "PayMind Demo Store", "text": note or ""})
+    return items
+
+
 INVOICE_SOON_DAYS = 3  # a customer is reminded this many days before an invoice is due
 UNPAID = ("SENT", "UNPAID", "PARTIALLY_PAID", "SCHEDULED")
+
+
+def shop_name(inv: dict, user: User, executor: Executor) -> str:
+    """The business that sent the invoice (search results leave it out, the details have it)."""
+    invoicer = inv.get("invoicer") or {}
+    if not invoicer:
+        details = executor.execute("show_invoice_details", {"invoice_id": inv["id"]}, caller=user)
+        invoicer = (details.body or {}).get("invoicer") or {} if details.ok else {}
+    return invoicer.get("business_name") or "the shop"
 
 
 def invoice_updates(user: User, executor: Executor, now) -> list[dict[str, Any]]:
@@ -180,7 +249,8 @@ def invoice_updates(user: User, executor: Executor, now) -> list[dict[str, Any]]
         items.append({
             "kind": "invoice_overdue" if days_left < 0 else "invoice_due", "invoice_id": inv["id"],
             "invoice_number": (inv.get("detail") or {}).get("invoice_number"), "amount": inv.get("due_amount") or inv.get("amount"),
-            "due_date": due, "days_left": days_left, "with": name or billing.get("email_address") or "a customer",
+            "due_date": due, "days_left": days_left,
+            "with": shop_name(inv, user, executor) if user.is_customer else name or billing.get("email_address") or "a customer",
             "time": due, "text": "",
         })
     return items

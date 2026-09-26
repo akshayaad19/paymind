@@ -47,7 +47,7 @@ def test_initial_database_contents():
     conn = sqlite3.connect(INITIAL_DB)
     counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
               for t in ("customers", "captures", "refunds", "orders", "invoices", "disputes", "transactions")}
-    assert counts == {"customers": 6, "captures": 52, "refunds": 4, "orders": 2, "invoices": 8, "disputes": 4, "transactions": 56}
+    assert counts == {"customers": 6, "captures": 51, "refunds": 4, "orders": 2, "invoices": 8, "disputes": 4, "transactions": 55}
 
 
 def test_initial_data_is_consistent():
@@ -67,7 +67,7 @@ def test_initial_data_is_consistent():
 def test_every_stateful_route_is_a_real_tool_path():
     tool_routes = {(t["method"], t["path"]) for t in TOOLS}
     assert stateful_routes() <= tool_routes
-    assert len(stateful_routes()) == 27
+    assert len(stateful_routes()) == 30
 
 
 def test_every_tool_is_answered(app):

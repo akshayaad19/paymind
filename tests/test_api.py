@@ -366,7 +366,7 @@ def test_unknown_dispute(setup):
 def test_whats_new_endpoint(setup):
     client, _, services = setup
     items = client.get("/api/whats-new", headers=login(client, "asha")).json()["items"]
-    assert items and {i["kind"] for i in items} <= {"new_message", "needs_reply", "no_reply_yet"}
+    assert items and {i["kind"] for i in items} <= {"new_message", "needs_reply", "no_reply_yet", "invoice_overdue", "invoice_due"}
     rahul_items = client.get("/api/whats-new", headers=login(client, "rahul")).json()["items"]
     assert all(i["with"] == "PayMind Demo Store" for i in rahul_items)   # only his own dispute, with the shop
     assert client.get("/api/whats-new").status_code == 401
@@ -646,3 +646,103 @@ def test_customer_sees_the_shops_offer_in_whats_new(setup):
     client.post(f"/api/disputes/{rid}/resolve", json={"action": "offer", "amount": "20", "note": "Sorry for the delay"}, headers=asha)
     item = next(i for i in client.get("/api/whats-new", headers=rahul).json()["items"] if i.get("dispute_id") == rid)
     assert item["action_needed"] and item["offer"]["amount"]["value"] == "20.00" and item["offer"]["note"] == "Sorry for the delay"
+
+
+# ---- dispute photos and replacements ------------------------------------------------------------
+
+PHOTO = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+
+def rahuls_dispute(client, headers):
+    return next(d["dispute_id"] for d in client.get("/api/paypal/overview", headers=headers).json()["disputes"])
+
+
+def test_customer_attaches_a_photo_the_shop_can_see(setup):
+    client, _, _ = setup
+    rahul, asha, priya = login(client, "rahul"), login(client, "asha"), login(client, "priya")
+    dispute_id = rahuls_dispute(client, rahul)
+    r = client.post(f"/api/disputes/{dispute_id}/photos", headers=rahul, files={"file": ("broken.png", PHOTO, "image/png")})
+    assert r.status_code == 200
+    body = r.json()
+    photo_id = body["photos"][0]["photo_id"]
+    assert body["photos"][0]["by"] == "BUYER" and body["messages"][-1]["text"].startswith("📎")
+    assert client.get(f"/api/disputes/{dispute_id}/photos/{photo_id}", headers=asha).content == PHOTO    # the shop sees it
+    assert client.get(f"/api/disputes/{dispute_id}/photos/{photo_id}", headers=priya).status_code == 404  # other customers don't
+
+
+def test_photo_upload_checks_type_and_owner(setup):
+    client, _, _ = setup
+    rahul, priya = login(client, "rahul"), login(client, "priya")
+    dispute_id = rahuls_dispute(client, rahul)
+    assert client.post(f"/api/disputes/{dispute_id}/photos", headers=rahul,
+                       files={"file": ("x.pdf", b"%PDF", "application/pdf")}).status_code == 415
+    assert client.post(f"/api/disputes/{dispute_id}/photos", headers=priya,
+                       files={"file": ("x.png", PHOTO, "image/png")}).status_code == 404
+
+
+def test_shop_resolves_with_a_replacement(setup):
+    client, _, _ = setup
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    dispute_id = rahuls_dispute(client, rahul)
+    missing = client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha, json={"action": "replacement", "carrier": "Blue Dart"})
+    assert missing.status_code == 422
+    r = client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha,
+                    json={"action": "replacement", "carrier": "Blue Dart", "tracking_number": "BD123456789IN"})
+    d = r.json()["dispute"]
+    assert d["status"] == "RESOLVED" and d["dispute_outcome"]["outcome_code"] == "RESOLVED_WITH_REPLACEMENT"
+    assert "BD123456789IN" in r.json()["messages"][-1]["text"]
+    assert client.post(f"/api/disputes/{dispute_id}/resolve", headers=rahul, json={"action": "replacement",
+                       "carrier": "x" * 3, "tracking_number": "y" * 5}).status_code == 403  # customers can't
+
+
+def test_case_shows_the_purchase_and_its_shipment(setup):
+    client, _, _ = setup
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    dispute_id = rahuls_dispute(client, rahul)
+    p = client.get(f"/api/disputes/{dispute_id}", headers=rahul).json()["purchase"]
+    assert p["items"] == ["Wireless Headphones × 1"] and p["amount"] == "79.99" and p["paid_how"] == "online store"
+    assert p["shipments"][0]["carrier"] == "Blue Dart" and p["shipments"][0]["status"] == "SHIPPED"   # seeded: shipped 19 Sept
+
+
+def test_shop_records_tracking_both_sides_see_it(setup):
+    client, _, _ = setup
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    dispute_id = rahuls_dispute(client, rahul)
+    r = client.post(f"/api/disputes/{dispute_id}/tracking", headers=asha,
+                    json={"carrier": "Blue Dart", "tracking_number": "BD240919RS1IN", "status": "DELIVERED"})
+    assert r.status_code == 200 and r.json()["purchase"]["shipments"][0]["status"] == "DELIVERED"
+    assert client.get(f"/api/disputes/{dispute_id}", headers=rahul).json()["purchase"]["shipments"][0]["status"] == "DELIVERED"
+    assert client.post(f"/api/disputes/{dispute_id}/tracking", headers=rahul,
+                       json={"carrier": "X Co", "tracking_number": "123", "status": "SHIPPED"}).status_code == 403
+
+
+# ---- closing a case, and telling the other side ---------------------------------------------------
+
+def whats_new_kinds(client, headers):
+    return [(i["kind"], i.get("dispute_id")) for i in client.get("/api/whats-new", headers=headers).json()["items"]]
+
+
+def test_customer_closes_case_and_shop_is_told_until_it_looks(setup):
+    client, _, _ = setup
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    dispute_id = rahuls_dispute(client, rahul)
+    r = client.post(f"/api/disputes/{dispute_id}/close", headers=rahul, json={"message": "Got it, thanks!"})
+    d = r.json()["dispute"]
+    assert d["status"] == "RESOLVED" and d["dispute_outcome"]["outcome_code"] == "CANCELED_BY_BUYER"
+    assert ("case_closed", dispute_id) in whats_new_kinds(client, asha)            # the shop is told
+    assert ("case_closed", dispute_id) not in whats_new_kinds(client, rahul)       # not the one who closed it
+    client.get(f"/api/disputes/{dispute_id}", headers=asha)                         # Asha opens it...
+    assert ("case_closed", dispute_id) not in whats_new_kinds(client, asha)        # ...and it's no longer new
+    assert client.post(f"/api/disputes/{dispute_id}/close", headers=rahul).status_code == 409
+    assert client.post(f"/api/disputes/{dispute_id}/close", headers=asha).status_code == 403  # customers only
+
+
+def test_shop_refund_tells_the_customer(setup):
+    client, _, _ = setup
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    dispute_id = rahuls_dispute(client, rahul)
+    client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha, json={"action": "refund"})
+    kinds = whats_new_kinds(client, rahul)
+    assert ("case_closed", dispute_id) in kinds and any(k == "refunded" for k, _ in kinds)
+    item = next(i for i in client.get("/api/whats-new", headers=rahul).json()["items"] if i["kind"] == "case_closed")
+    assert item["outcome"] == "refunded" and item["amount_refunded"]["value"] == "79.99"

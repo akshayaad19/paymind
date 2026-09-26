@@ -15,9 +15,23 @@ SYSTEM_SEARCH = "system_search"
 CHECK_UPDATES = "check_updates"
 ORDER_STATUS = "order_status"
 RAG_SEARCH = "rag_search"
-REQUEST_REFUND = "request_refund"
-BUILTINS = (FIND_TOOLS, SYSTEM_SEARCH, CHECK_UPDATES, ORDER_STATUS, RAG_SEARCH, REQUEST_REFUND)
-CUSTOMER_ONLY = {REQUEST_REFUND}
+REQUEST_RESOLUTION = "request_resolution"
+MY_PURCHASES = "my_purchases"
+REPORT_PROBLEM = "report_problem"
+CUSTOMER_PAYMENTS = "customer_payments"
+CLOSE_CASE = "close_case"
+BUILTINS = (FIND_TOOLS, SYSTEM_SEARCH, CHECK_UPDATES, ORDER_STATUS, RAG_SEARCH, REQUEST_RESOLUTION, MY_PURCHASES, REPORT_PROBLEM,
+            CUSTOMER_PAYMENTS, CLOSE_CASE)
+CUSTOMER_ONLY = {REQUEST_RESOLUTION, MY_PURCHASES, REPORT_PROBLEM, CLOSE_CASE}
+SHOP_ONLY = {CUSTOMER_PAYMENTS}
+PROBLEMS = {  # what the customer says → the dispute reason recorded with the case
+    "not_working": "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+    "damaged": "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+    "not_as_described": "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED",
+    "not_received": "MERCHANDISE_OR_SERVICE_NOT_RECEIVED",
+    "wrong_amount": "INCORRECT_AMOUNT",
+    "charged_twice": "DUPLICATE_TRANSACTION",
+}
 
 BUILTIN_SCHEMAS = [
     {
@@ -93,20 +107,85 @@ BUILTIN_SCHEMAS = [
         },
     },
     {
-        "name": REQUEST_REFUND,
+        "name": REQUEST_RESOLUTION,
         "description": (
-            "Customers only: formally ask the shop for a full refund on one of the customer's open disputes. "
-            "Sends the message to the shop and marks the dispute 'Refund requested' for both sides until the "
-            "shop refunds or makes an offer. Use this (not a plain message) whenever the customer asks the shop "
-            "for their money back. (Changes data; the user is asked to confirm automatically.)"
+            "Customers only: on one of the customer's OPEN disputes, formally ask the shop for a refund of the "
+            "disputed amount or for a replacement. Sends the message to the shop and marks the dispute 'Refund "
+            "requested' / 'Replacement requested' for both sides. Use this (not a plain message) when the customer "
+            "asks for their money back or a replacement on an existing dispute. (Changes data; the user is asked to "
+            "confirm automatically.)"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "dispute_id": {"type": "string", "description": "The customer's dispute, e.g. PP-D-38106 (look it up first)."},
+                "wants": {"type": "string", "enum": ["refund", "replacement"], "description": "What the customer chose. Ask if unclear."},
                 "message": {"type": "string", "description": "A short, polite message to the shop in the customer's name, with the reason."},
             },
-            "required": ["dispute_id", "message"],
+            "required": ["dispute_id", "wants", "message"],
+        },
+    },
+    {
+        "name": MY_PURCHASES,
+        "description": (
+            "Customers only: the customer's own purchases from this shop in the last 90 days: payment_id, date, "
+            "items, amount, how it was paid (online store, in store, invoice), shipments (carrier, tracking number, status) and any open case on it. Also use it for 'where is my order?' about online-store purchases. Use it to find "
+            "which purchase a problem is about (e.g. 'my earphones stopped working')."
+        ),
+        "parameters": {"type": "object", "properties": {"item": {"type": "string", "description": "Only purchases with this item, e.g. 'headphones'."}}},
+    },
+    {
+        "name": CLOSE_CASE,
+        "description": (
+            "Customers only: close one of the customer's own open disputes because they're satisfied (e.g. 'I got my "
+            "refund, you can close it', 'the parcel arrived'). The shop is told the customer marked it resolved. "
+            "(Changes data; the user is asked to confirm automatically.)"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "dispute_id": {"type": "string", "description": "The customer's open dispute (look it up first)."},
+                "message": {"type": "string", "description": "A short closing note to the shop in the customer's words."},
+            },
+            "required": ["dispute_id"],
+        },
+    },
+    {
+        "name": CUSTOMER_PAYMENTS,
+        "description": (
+            "Shop only: find a customer and their payments from the last 90 days by name, email or payer ID (e.g. "
+            "'Rahul', 'rahul.sharma@example.com'). Returns every matching customer (name, email, payer_id) with each "
+            "payment: payment_id, date, items, amount, refundable amount (left), how it was paid, open case, "
+            "shipments. Use it BEFORE any refund or action for a customer named in words, and ask the user to choose "
+            "when several customers or payments match."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Name, email or payer ID, as the user said it."},
+                "item": {"type": "string", "description": "Only payments with this item, e.g. 'headphones'."},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "name": REPORT_PROBLEM,
+        "description": (
+            "Customers only: open a NEW case with the shop about one of their purchases (not working, damaged, not as "
+            "described, not received, wrong amount, charged twice). Before calling: find the purchase with "
+            "my_purchases, ask what's wrong if unclear, and ask whether they want a refund or a replacement. The shop "
+            "sees 'Refund requested' / 'Replacement requested'. (Changes data; the user is asked to confirm automatically.)"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "payment_id": {"type": "string", "description": "The purchase's payment_id from my_purchases."},
+                "problem": {"type": "string", "enum": list(PROBLEMS)},
+                "wants": {"type": "string", "enum": ["refund", "replacement"]},
+                "amount": {"type": "string", "description": "Only for a refund of part of the payment (e.g. one of two items), e.g. '29.99'. Leave out for the whole purchase."},
+                "message": {"type": "string", "description": "A short, polite description of the problem in the customer's words, addressed to the shop."},
+            },
+            "required": ["payment_id", "problem", "wants", "message"],
         },
     },
 ]

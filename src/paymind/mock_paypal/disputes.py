@@ -63,6 +63,69 @@ def refund_buyer(store: Store, dispute: dict, amount=None, note: str | None = No
     return refund
 
 
+BUYER_REASONS = {"MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED", "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", "INCORRECT_AMOUNT",
+                 "DUPLICATE_TRANSACTION", "CREDIT_NOT_PROCESSED"}
+
+
+def open_dispute(store: Store, body: dict) -> dict:
+    """A buyer opens a case about one of their payments: the disputed amount can't be more than
+    what's left after refunds, and a payment can only have one open case."""
+    import random
+    from datetime import timedelta
+
+    capture = store.db.get("captures", str(body.get("capture_id") or ""))
+    if not capture:
+        raise not_found("capture", str(body.get("capture_id")))
+    reason = body.get("reason")
+    if reason not in BUYER_REASONS:
+        raise PayPalError(400, "INVALID_PARAMETER_VALUE", f"reason must be one of {sorted(BUYER_REASONS)}.", "reason")
+    message = str(body.get("message") or "").strip()
+    if not message:
+        raise PayPalError(400, "MISSING_REQUIRED_PARAMETER", "Describe the problem in message.", "message")
+    remaining = amount_of(capture["amount"]) - amount_of(capture["refunded_amount"])
+    amount = amount_of(body["amount"]) if body.get("amount") else remaining
+    if amount <= 0 or amount > remaining:
+        raise PayPalError(422, "INVALID_DISPUTE_AMOUNT", f"The amount must be between 0.01 and {remaining} (what's left of this payment).", "amount")
+    if any(d["disputed_transactions"][0]["seller_transaction_id"] == capture["id"] and d["status"] not in CLOSED
+           for d in store.db.all("disputes")):
+        raise PayPalError(422, "DISPUTE_ALREADY_OPEN", "This payment already has an open case.", "capture_id")
+    payer = store.customer((capture.get("payer") or {}).get("payer_id", ""))
+    merchant = store.merchant()
+    now = store.now()
+    dispute_id = next(i for i in (f"PP-D-{random.randint(10000, 99999)}" for _ in range(100)) if not store.db.get("disputes", i))
+    return store.db.put("disputes", {
+        "dispute_id": dispute_id, "create_time": iso(now), "update_time": iso(now), "reason": reason,
+        "status": "WAITING_FOR_SELLER_RESPONSE", "dispute_state": "REQUIRED_ACTION", "dispute_amount": money(amount),
+        "dispute_life_cycle_stage": "INQUIRY", "dispute_channel": "INTERNAL",
+        "seller_response_due_date": iso(now + timedelta(days=10)),
+        "disputed_transactions": [{
+            "seller_transaction_id": capture["id"], "create_time": capture["create_time"], "gross_amount": capture["amount"],
+            "buyer": {"payer_id": payer["payer_id"], "name": f"{payer['given_name']} {payer['surname']}", "email": payer["email"]},
+            "seller": {"email": merchant.get("email_address"), "name": merchant.get("business_name")}}],
+        "messages": [{"posted_by": "BUYER", "time_posted": iso(now), "content": message}],
+        "evidences": [],
+    })
+
+
+def buyer_closes(store: Store, dispute_id: str, body: dict) -> dict:
+    """The buyer is satisfied (e.g. the shop already refunded) and closes the case, with a closing message."""
+    dispute = get_open_dispute(store, dispute_id)
+    note = str(body.get("message") or "").strip() or "I'm happy with how this was sorted out, so I'm closing this case."
+    dispute.setdefault("messages", []).append({"posted_by": "BUYER", "time_posted": iso(store.now()), "content": f"✅ {note}"})
+    dispute.pop("offer", None)
+    dispute["dispute_outcome"] = {"outcome_code": "CANCELED_BY_BUYER", "closed_by": "BUYER"}
+    return update(store, dispute, "RESOLVED", "RESOLVED")
+
+
+def close_with_replacement(store: Store, dispute_id: str, body: dict) -> dict:
+    """The shop settles the case by sending a replacement: no refund, the case closes."""
+    dispute = get_open_dispute(store, dispute_id)
+    dispute.pop("offer", None)
+    dispute["dispute_outcome"] = {"outcome_code": "RESOLVED_WITH_REPLACEMENT", "closed_by": "SELLER",
+                                  "carrier": body.get("carrier"), "tracking_number": body.get("tracking_number")}
+    return update(store, dispute, "RESOLVED", "RESOLVED")
+
+
 def summary(d: dict) -> dict:
     keys = ("dispute_id", "create_time", "update_time", "reason", "status", "dispute_state",
             "dispute_amount", "dispute_life_cycle_stage", "disputed_transactions")
@@ -97,7 +160,7 @@ def accept_claim(request: Request, dispute_id: str, body: dict = Body(default={}
     store = store_of(request)
     dispute = get_open_dispute(store, dispute_id)
     refund_buyer(store, dispute, note=body.get("note"))
-    dispute["dispute_outcome"] = {"outcome_code": "RESOLVED_BUYER_FAVOUR", "amount_refunded": dispute["dispute_amount"]}
+    dispute["dispute_outcome"] = {"outcome_code": "RESOLVED_BUYER_FAVOUR", "amount_refunded": dispute["dispute_amount"], "closed_by": "SELLER"}
     return update(store, dispute, "RESOLVED", "RESOLVED")
 
 
@@ -122,7 +185,7 @@ def accept_offer_to_resolve_dispute(request: Request, dispute_id: str, body: dic
     if not dispute.get("offer"):
         raise PayPalError(422, "NO_OFFER_TO_ACCEPT", "The seller hasn't made an offer on this dispute.")
     refund_buyer(store, dispute, amount_of(dispute["offer"]["offer_amount"]), body.get("note"))
-    dispute["dispute_outcome"] = {"outcome_code": "RESOLVED_WITH_PAYOUT", "amount_refunded": dispute["offer"]["offer_amount"]}
+    dispute["dispute_outcome"] = {"outcome_code": "RESOLVED_WITH_PAYOUT", "amount_refunded": dispute["offer"]["offer_amount"], "closed_by": "BUYER"}
     return update(store, dispute, "RESOLVED", "RESOLVED")
 
 

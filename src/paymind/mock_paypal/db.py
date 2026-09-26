@@ -26,6 +26,7 @@ RECORD_TABLES = {
     "orders": "id",
     "invoices": "id",
     "disputes": "dispute_id",
+    "trackers": "id",
 }
 
 SCHEMA = """

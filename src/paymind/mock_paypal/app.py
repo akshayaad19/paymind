@@ -34,17 +34,17 @@ import random
 import shutil
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from . import disputes, invoices, payments, reporting
+from . import disputes, invoices, payments, reporting, trackers
 from .db import Database, prepare
 from .errors import PayPalError, error_body, paypal_error_handler
 from .store import Store
 
 ROOT = Path(__file__).resolve().parents[3]
 INITIAL_DB = ROOT / "data/mock/initial.db"
-STATEFUL_ROUTERS = [invoices.router, payments.router, disputes.router, reporting.router]
+STATEFUL_ROUTERS = [invoices.router, payments.router, disputes.router, reporting.router, trackers.router]
 
 
 def first_success_example(examples: list[dict]) -> tuple[int, object] | None:
@@ -200,6 +200,50 @@ def create_app(db_path: str | Path | None = None, initial_db: Path = INITIAL_DB,
                 store.db.rollback()
                 raise
         return invoice
+
+    async def in_transaction(work):
+        """Run work(store) as one transaction: PayPal-style errors roll back and become error responses."""
+        async with app.state.lock:
+            store = app.state.store
+            store.db.begin()
+            try:
+                result = work(store)
+                store.db.commit()
+                return result
+            except PayPalError as exc:
+                store.db.rollback()
+                return JSONResponse(error_body(exc.status, exc.issue, exc.description), status_code=exc.status)
+            except Exception:
+                store.db.rollback()
+                raise
+
+    @app.post("/mock/disputes", tags=["mock"])
+    async def buyer_opens_dispute(body: dict = Body(...)):
+        """Simulates a customer opening a case about one of their payments (on PayPal this happens in the
+        buyer's Resolution Center; there's no REST API for it). body: capture_id, reason, amount, message."""
+        from .disputes import open_dispute
+
+        return await in_transaction(lambda store: open_dispute(store, body))
+
+    @app.post("/mock/disputes/{dispute_id}/close", tags=["mock"])
+    async def buyer_closes_dispute(dispute_id: str, body: dict = Body(default={})):
+        """Simulates the buyer closing their own case in PayPal's Resolution Center (they're satisfied).
+        body: message (optional closing note)."""
+        from .disputes import buyer_closes
+
+        return await in_transaction(lambda store: buyer_closes(store, dispute_id, body))
+
+    @app.post("/mock/disputes/{dispute_id}/replacement", tags=["mock"])
+    async def seller_sends_replacement(dispute_id: str, body: dict = Body(default={})):
+        """Simulates the shop settling a case by sending a replacement (no money moves).
+        body: carrier, tracking_number."""
+        from .disputes import close_with_replacement
+
+        return await in_transaction(lambda store: close_with_replacement(store, dispute_id, body))
+
+    @app.get("/mock/trackers", tags=["mock"])
+    def list_trackers(transaction_id: str | None = None):
+        return trackers.trackers_for(app.state.store, transaction_id)
 
     @app.get("/mock/summary", tags=["mock"])
     def summary():

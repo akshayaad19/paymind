@@ -395,12 +395,12 @@ Agent ── GET /v1/customer/disputes?dispute_state=REQUIRED_ACTION ──► m
 
 | Kind | Count | How it answers |
 |---|---|---|
-| **Stateful** | 27 | Real logic on the SQLite data: a refund changes the payment's status, creates a refund record and lowers the balance; a sent invoice can't be sent again |
+| **Stateful** | 30 | Real logic on the SQLite data: a refund changes the payment's status, creates a refund record and lowers the balance; a sent invoice can't be sent again |
 | **Example replay** | 83 | Returns PayPal's own example response from `example_responses.json` (header `X-Mock-Source: example:<tool>`) |
 
 All 112 tools are answered (two tools share a URL with another tool). Every stateful handler uses the exact path from its tool card.
 
-Stateful areas: invoices (create, show, list, send, remind, cancel, delete, record payment, search, next number) · captures and refunds · orders (create, show, capture) · disputes (list, show, accept claim, make/accept/deny offer, message, evidence, escalate) · transactions and balance.
+Stateful areas: invoices (create, show, list, send, remind, cancel, delete, record payment, search, next number) · captures and refunds · orders (create, show, capture) · disputes (list, show, accept claim, make/accept/deny offer, message, evidence, escalate) · transactions and balance · shipment tracking (add, show, update).
 
 #### The data: SQLite is the source of truth
 
@@ -418,12 +418,12 @@ data/mock/paypal_mock.db   working database the server reads and writes (git-ign
 | Table | Rows in `initial.db` | What |
 |---|---|---|
 | `customers` | 6 | including **user_123** (Rahul Sharma) and **john@x.com** |
-| `captures` | 52 | payments from mid-July to 25 Sep 2026 (sales, invoice payments, disputed payments). Priya's double charge is built in: INV-1005 paid at 09:16 on 20 Sep, then the same $29.99 charged again at 09:18 (the payment she disputes) |
+| `captures` | 51 | payments from mid-July to 25 Sep 2026 (sales, invoice payments, disputed payments). Priya's case is built in: she ordered one USB-C charger, our invoice INV-1005 billed two ($59.98), she paid it on 20 Sep and disputes the extra $29.99 |
 | `refunds` | 4 | two older (Aug) and two recent (Sep): a full and a partial refund each time |
 | `invoices` | 8 | 2 draft, 3 sent (one overdue), 2 paid, 1 cancelled |
-| `disputes` | 4 | All between the shop and a customer: **Rahul (user_123), $79.99, item not received**, and **Priya, $29.99, charged twice**, both waiting for the shop; **Wei Chen, $59**, waiting for him to answer a $30 offer; Emma's, resolved |
+| `disputes` | 4 | All between the shop and a customer: **Rahul (user_123), $79.99, item not received**, and **Priya, $29.99, wrong amount charged** (she ordered one USB-C charger, invoice INV-1005 billed two), both waiting for the shop; **Wei Chen, $59**, waiting for him to answer a $30 offer; Emma's, resolved |
 | `orders` | 2 | one created, one completed |
-| `transactions` | 56 | the ledger behind transaction search and the balance (52 payments, 4 refunds). Each sale says how it was paid, using PayPal's own fields: `invoice_id` = paid an invoice, `store_info` (store + till) = paid in the shop, neither = online store checkout. The Transactions table shows this as **Paid how** |
+| `transactions` | 55 | the ledger behind transaction search and the balance (51 payments, 4 refunds). Each sale says how it was paid, using PayPal's own fields: `invoice_id` = paid an invoice, `store_info` (store + till) = paid in the shop, neither = online store checkout. The Transactions table shows this as **Paid how** |
 | `meta` | | merchant details, starting balance, next invoice number |
 | `idempotency` | | remembered answers for `PayPal-Request-Id` retries |
 
@@ -697,7 +697,15 @@ On the delivery date the customer is asked "Has it arrived?" → Delivered, or N
 
 **Disputes are between the shop and the customer only.** PayMind is the seller's portal: there's no PayPal review. The shop resolves a dispute with **Resolve…** in the dispute panel: **Refund in full** (the dispute closes) or **Make an offer** (a partial refund the customer accepts or declines by telling the assistant in chat). PayPal's review tools (escalate to a claim, send evidence to PayPal, appeal, and PayPal's sandbox settle/status tools) are **switched off** in `tools.json` (`"disabled": true`, no allowed roles), so search never offers them and the validator blocks them for everyone.
 
-**Refund requests:** when a customer asks the shop for their money back, the agent uses the customer-only `request_refund` tool (confirmed like any write): it sends the message **and** records the request in `refund_requests` (app DB; PayPal has no such record). Both sides then see **Refund requested** on the dispute, a line at the top of the thread says who asked and when, and the shop's What's new shows *"💸 Rahul asked for a full refund · Resolve"*. It clears by itself once it's no longer the shop's turn: refunding resolves the dispute, and an offer hands the turn to the customer.
+**Acting for a customer named in words ("refund 49 to Rahul"), at any number of customers:** the shop-only `customer_payments` tool finds every customer whose name, email or payer ID matches, each with their recent payments. If several customers or payments match, the assistant must list them (name and email; date, items and amount) and ask which one; it also asks for a refund reason, which is sent to the customer. Two rules are enforced in code, not left to the model: a payment with an **open dispute can't be refunded directly** (it's sent back: settle it with `accept_claim` or an offer), and every confirmation for a payment ends with **who gets the money and for what**, looked up from PayPal (*To: Rahul Sharma (rahul.sharma@example.com) · For: Wireless Headphones × 1, paid 79.99 USD on 2026-09-18*), so the person approving checks the real customer, not the model's description.
+
+**Closing a case and telling the other side:** a customer who's satisfied (refund arrived, parcel came) closes the case with **✅ Mark as resolved** in the case, or by telling the assistant (`close_case`, confirmed). Every close records who closed it (`dispute_outcome.closed_by`), and **What's new tells the other side** until they open the case: the shop sees *"✅ Rahul Sharma's case was closed · marked resolved by the customer"*, the customer sees *"✅ The shop resolved your case · refunded $79.99"* (or the replacement's tracking number). Customers also get *"💸 PayMind Demo Store refunded you $49.00"* for any refund on their payments in the last 14 days, however it was made. A closed case shows how it ended at the top, and an open offer shows a hint to answer it in Chat.
+
+**What a case is about:** every dispute panel starts with the purchase behind it: items (from PayPal's `cart_info`), amount, refunds, how and when it was paid, and the latest **shipment** (PayPal's tracking API: carrier, tracking number, status). The shop can add or update tracking right there (**Add tracking**), and the customer sees the same line, so "where is my order?" is answered in the case itself (the assistant's `my_purchases` returns shipments too).
+
+**Product problems ("my earphones stopped working"):** the customer-only tools cover the whole flow. `my_purchases` finds the purchase (the customer's own payments over the last 90 days, with items from PayPal's `cart_info`, how it was paid, what's been refunded and any open case). The assistant asks, in one short question, what's wrong and whether they'd like a **refund or a replacement**. Then `report_problem` (confirmed like any write) opens a new case with the shop for that payment (mock: `POST /mock/disputes`, since PayPal buyers open cases in PayPal's Resolution Center, not through the REST API) and records what they asked for. The customer then attaches a **photo** in the case (📎 in the dispute panel; stored in `data/app/uploads/disputes/`, only visible to that customer and the shop), and the other side is told in the thread. The shop answers with **Resolve…**: refund, make an offer, or **send a replacement** (carrier + tracking number go to the customer, no money moves, the case closes). On an existing dispute, `request_resolution` asks for a refund or a replacement the same way.
+
+**Refund requests:** when a customer asks the shop for their money back, the agent uses the customer-only `request_resolution` tool (confirmed like any write): it sends the message **and** records the request in `refund_requests` (app DB; PayPal has no such record). Both sides then see **Refund requested** on the dispute, a line at the top of the thread says who asked and when, and the shop's What's new shows *"💸 Rahul asked for a full refund · Resolve"*. It clears by itself once it's no longer the shop's turn: refunding resolves the dispute, and an offer hands the turn to the customer.
 
 **Dispute conversations.** Each dispute has a message thread between the customer and the shop (PayPal's own dispute messages, not a separate chat system):
 - **PayMind data → Disputes**: statuses and reasons in plain words from the viewer's side (the shop sees *"Needs your response"* where the customer sees *"Waiting for the shop"*), and an **"N new"** label for unread messages from the other side. Click a dispute to open the conversation panel and reply; resolved disputes are read-only.

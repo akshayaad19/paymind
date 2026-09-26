@@ -20,9 +20,12 @@ Tables:
              the customer; the shop can ship again). Or rejected.
   dispute_reads  how many messages of each dispute's thread each user has
              seen, so the page can flag new messages from the other side.
-  refund_requests  a customer formally asked the shop for a full refund on a
-             dispute (PayPal has no such record). Shown as "Refund requested"
-             until the shop refunds (dispute resolved) or makes an offer.
+  refund_requests  what a customer formally asked the shop for on a dispute: a refund of
+             the disputed amount or a replacement (PayPal has no such record).
+             Shown as "Refund requested" / "Replacement requested" while it's the
+             shop's turn.
+  dispute_photos  photos a customer attached to a dispute (e.g. the broken item);
+             files live in data/app/uploads/ (git-ignored).
 
 Files (same pattern as the mock):
   data/app/initial.db  starting data: demo users (committed)
@@ -120,7 +123,17 @@ CREATE TABLE IF NOT EXISTS refund_requests (  -- a customer asked the shop for a
     amount        TEXT NOT NULL,             -- the disputed amount, e.g. "79.99"
     currency_code TEXT NOT NULL,
     message       TEXT NOT NULL,             -- what was sent to the shop with the request
-    requested_at  TEXT NOT NULL
+    requested_at  TEXT NOT NULL,
+    wants         TEXT NOT NULL DEFAULT 'refund' CHECK (wants IN ('refund', 'replacement'))
+);
+
+CREATE TABLE IF NOT EXISTS dispute_photos (  -- evidence a customer attached to a dispute
+    photo_id     TEXT PRIMARY KEY,
+    dispute_id   TEXT NOT NULL,
+    user_id      TEXT NOT NULL REFERENCES users(user_id),
+    path         TEXT NOT NULL,
+    mime         TEXT NOT NULL,
+    uploaded_at  TEXT NOT NULL
 );
 """
 
@@ -178,6 +191,8 @@ class AppDatabase:
         columns = {r[1] for r in self.conn.execute("PRAGMA table_info(dispute_reads)")}
         if "seen_count" not in columns:  # databases created before this column existed
             self.conn.execute("ALTER TABLE dispute_reads ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0")
+        if "wants" not in {r[1] for r in self.conn.execute("PRAGMA table_info(refund_requests)")}:
+            self.conn.execute("ALTER TABLE refund_requests ADD COLUMN wants TEXT NOT NULL DEFAULT 'refund'")
         if "token_version" not in {r[1] for r in self.conn.execute("PRAGMA table_info(users)")}:
             self.conn.execute("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1")
 
@@ -304,24 +319,49 @@ class AppDatabase:
                 "INSERT OR REPLACE INTO dispute_reads (user_id, dispute_id, last_read, seen_count) VALUES (?, ?, ?, ?)",
                 (user_id, dispute_id, now_iso(), seen_count))
 
+    def dispute_read_times(self, user_id: str) -> dict[str, str]:
+        """dispute_id -> when this user last opened it."""
+        return dict(self.conn.execute("SELECT dispute_id, last_read FROM dispute_reads WHERE user_id = ?", (user_id,)).fetchall())
+
     def dispute_reads(self, user_id: str) -> dict[str, int]:
         """dispute_id -> number of messages this user has seen."""
         return dict(self.conn.execute("SELECT dispute_id, seen_count FROM dispute_reads WHERE user_id = ?", (user_id,)).fetchall())
 
     # ---- refund requests ----------------------------------------------------------
 
-    def request_refund(self, user_id: str, dispute_id: str, amount: dict, message: str) -> dict:
+    def request_refund(self, user_id: str, dispute_id: str, amount: dict, message: str, wants: str = "refund") -> dict:
+        """Record what the customer asked for on a dispute: a refund of `amount`, or a replacement."""
+        if wants not in ("refund", "replacement"):
+            raise ValueError("wants must be refund or replacement")
         with self.conn:
             self.conn.execute(
-                "INSERT OR REPLACE INTO refund_requests (dispute_id, user_id, amount, currency_code, message, requested_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)", (dispute_id, user_id, amount["value"], amount["currency_code"], message, now_iso()))
+                "INSERT OR REPLACE INTO refund_requests (dispute_id, user_id, amount, currency_code, message, requested_at, wants) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (dispute_id, user_id, amount["value"], amount["currency_code"], message, now_iso(), wants))
         return self.refund_requests()[dispute_id]
 
     def refund_requests(self) -> dict[str, dict]:
-        """dispute_id -> the customer's refund request."""
+        """dispute_id -> what the customer asked for (wants: refund | replacement)."""
         rows = self.conn.execute("SELECT * FROM refund_requests").fetchall()
-        return {r["dispute_id"]: {"amount": {"currency_code": r["currency_code"], "value": r["amount"]},
+        return {r["dispute_id"]: {"amount": {"currency_code": r["currency_code"], "value": r["amount"]}, "wants": r["wants"],
                                   "message": r["message"], "time": r["requested_at"], "user_id": r["user_id"]} for r in rows}
+
+    # ---- dispute photos -------------------------------------------------------------
+
+    def add_dispute_photo(self, dispute_id: str, user_id: str, path: str, mime: str) -> dict:
+        photo_id = secrets.token_hex(8)
+        with self.conn:
+            self.conn.execute("INSERT INTO dispute_photos (photo_id, dispute_id, user_id, path, mime, uploaded_at) VALUES (?, ?, ?, ?, ?, ?)",
+                              (photo_id, dispute_id, user_id, path, mime, now_iso()))
+        return self.dispute_photo(photo_id)
+
+    def dispute_photo(self, photo_id: str) -> dict | None:
+        row = self.conn.execute("SELECT * FROM dispute_photos WHERE photo_id = ?", (photo_id,)).fetchone()
+        return dict(row) if row else None
+
+    def dispute_photos(self, dispute_id: str) -> list[dict]:
+        rows = self.conn.execute("SELECT * FROM dispute_photos WHERE dispute_id = ? ORDER BY uploaded_at", (dispute_id,))
+        return [dict(r) for r in rows]
 
     # ---- audit log ---------------------------------------------------------------
 

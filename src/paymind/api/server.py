@@ -23,7 +23,10 @@ checked on the server for every call; the web page only decides what to show.
   POST /api/pos/{id}/delivered | /not-received   customers confirm delivery or report it missing
   GET  /api/disputes/{id}       a dispute and its message thread (own disputes only for customers)
   POST /api/disputes/{id}/messages  send a message to the other side of the dispute
-  POST /api/disputes/{id}/resolve   accountants: refund in full, or offer a partial refund
+  POST /api/disputes/{id}/resolve   accountants: refund, offer a partial refund, or send a replacement
+  POST /api/disputes/{id}/photos    attach a photo to a dispute (e.g. the broken item); GET …/photos/{photo_id}
+  POST /api/disputes/{id}/close     customers: close their own case as resolved (the shop is told)
+  POST /api/disputes/{id}/tracking  accountants: record a shipment (carrier, tracking number, status) for the disputed payment
   GET  /api/whats-new           new messages / replies owed / no reply yet, on open disputes
   GET  /api/audit               the caller's own audit log
 
@@ -146,9 +149,21 @@ class POReject(BaseModel):
 
 
 class ResolveIn(BaseModel):
-    action: str = Field(pattern="^(refund|offer)$")
+    action: str = Field(pattern="^(refund|offer|replacement)$")
     amount: str | None = None                                  # offer: the partial refund offered
     note: str | None = Field(default=None, max_length=1000)
+    carrier: str | None = Field(default=None, max_length=60)          # replacement: how it's sent
+    tracking_number: str | None = Field(default=None, max_length=60)
+
+
+class TrackingIn(BaseModel):
+    carrier: str = Field(min_length=2, max_length=60)
+    tracking_number: str = Field(min_length=3, max_length=60)
+    status: str = Field(default="SHIPPED", pattern="^(SHIPPED|ON_HOLD|DELIVERED|CANCELLED)$")
+
+
+PHOTO_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/heic": ".heic"}
+PHOTO_MAX_BYTES = 8 * 1024 * 1024
 
 
 class ConfirmIn(BaseModel):
@@ -540,7 +555,15 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         messages = [{"from": m["posted_by"], "name": names.get(m["posted_by"], m["posted_by"]),
                      "time": m["time_posted"], "text": m["content"]}
                     for m in sorted(dispute.get("messages", []), key=lambda m: m["time_posted"])]
-        return {"dispute": dispute, "messages": messages, "can_reply": dispute.get("status") != "RESOLVED",
+        photos = [{"photo_id": ph["photo_id"], "time": ph["uploaded_at"],
+                   "by": "SELLER" if (services.appdb.get_user(ph["user_id"]) or User("", "", "", "customer", "x")).role == "accountant" else "BUYER"}
+                  for ph in services.appdb.dispute_photos(dispute["dispute_id"])]
+        from ..app.purchases import purchase_details
+
+        # the caller already passed own_dispute(), so the purchase behind it may be shown
+        purchase = purchase_details(tx["seller_transaction_id"], services.executor) if tx.get("seller_transaction_id") else None
+        return {"dispute": dispute, "messages": messages, "photos": photos, "purchase": purchase,
+                "can_reply": dispute.get("status") != "RESOLVED",
                 "can_resolve": dispute.get("status") in ("WAITING_FOR_SELLER_RESPONSE", "OPEN"),
                 "offer": dispute.get("offer")}
 
@@ -567,6 +590,76 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         mark_seen(services.appdb, user, dispute)
         return conversation(dispute)
 
+    @app.post("/api/disputes/{dispute_id}/photos", tags=["disputes"])
+    async def attach_photo(dispute_id: str, file: UploadFile = File(...), user: User = Depends(current_user)):
+        """Attach a photo (JPG, PNG, WebP or HEIC, up to 8 MB) to an open dispute. The other side is told
+        in the thread, so it shows up as a new message."""
+        dispute = own_dispute(user, dispute_id)
+        if dispute.get("status") == "RESOLVED":
+            raise HTTPException(409, "This dispute is resolved.")
+        data, mime = await file.read(), (file.content_type or "").lower()
+        if mime not in PHOTO_TYPES:
+            raise HTTPException(415, "Attach a photo: JPG, PNG, WebP or HEIC.")
+        if not data:
+            raise HTTPException(400, "The file is empty.")
+        if len(data) > PHOTO_MAX_BYTES:
+            raise HTTPException(413, "The photo is larger than 8 MB.")
+        folder = services.uploads / "disputes"
+        folder.mkdir(parents=True, exist_ok=True)
+        path = folder / f"{uuid.uuid4().hex}{PHOTO_TYPES[mime]}"
+        path.write_bytes(data)
+        services.appdb.add_dispute_photo(dispute_id, user.user_id, str(path), mime)
+        services.executor.execute("send_message_about_dispute_to_other_party",
+                                  {"dispute_id": dispute_id, "message": "📎 I attached a photo to this case."}, caller=user)
+        services.appdb.log_action(user, "attach_photo", {"dispute_id": dispute_id}, "success",
+                                  result_summary=f"photo attached to {dispute_id}", confirmed=True)
+        dispute = own_dispute(user, dispute_id)
+        mark_seen(services.appdb, user, dispute)
+        return conversation(dispute)
+
+    @app.post("/api/disputes/{dispute_id}/close", tags=["disputes"])
+    def close_case(dispute_id: str, body: MessageIn | None = None, user: User = Depends(require_role("customer"))):
+        """The customer is satisfied and closes their case (✅ Mark as resolved). The shop sees it in What's new."""
+        dispute = own_dispute(user, dispute_id)
+        if dispute.get("status") == "RESOLVED":
+            raise HTTPException(409, "This case is already closed.")
+        note = (body.message.strip() if body else "")
+        r = services.executor.client.post(f"{services.executor.base_url}/mock/disputes/{dispute_id}/close", json={"message": note})
+        ok = r.status_code < 300
+        services.appdb.log_action(user, "close_case", {"dispute_id": dispute_id, "message": note}, "success" if ok else "failed",
+                                  http_status=r.status_code, result_summary=(f"case {dispute_id} closed by the customer" if ok else r.text)[:300],
+                                  confirmed=True)
+        if not ok:
+            raise HTTPException(502, "Couldn't close the case. Please try again.")
+        dispute = own_dispute(user, dispute_id)
+        mark_seen(services.appdb, user, dispute)
+        return conversation(dispute)
+
+    @app.post("/api/disputes/{dispute_id}/tracking", tags=["disputes"])
+    def add_tracking(dispute_id: str, body: TrackingIn, user: User = Depends(require_role("accountant"))):
+        """Record where the disputed purchase is (PayPal's Add Tracking API). Both sides see it in the case."""
+        dispute = own_dispute(user, dispute_id)
+        payment_id = (dispute.get("disputed_transactions") or [{}])[0].get("seller_transaction_id")
+        tracker = {"transaction_id": payment_id, "carrier": body.carrier.strip(), "tracking_number": body.tracking_number.strip(),
+                   "status": body.status}
+        result = services.executor.execute("add_tracking_information_for_multiple_paypal_transactions", {"trackers": [tracker]}, caller=user)
+        services.appdb.log_action(user, "add_tracking_information_for_multiple_paypal_transactions", tracker,
+                                  "success" if result.ok else "failed", http_status=result.status_code,
+                                  result_summary=(result.error or f"tracking added for {dispute_id}")[:300], confirmed=True,
+                                  request_id=result.request_id)
+        if not result.ok:
+            raise HTTPException(422 if result.status_code in (400, 422) else 502, result.error)
+        return conversation(own_dispute(user, dispute_id))
+
+    @app.get("/api/disputes/{dispute_id}/photos/{photo_id}", tags=["disputes"])
+    def dispute_photo(dispute_id: str, photo_id: str, user: User = Depends(current_user)):
+        own_dispute(user, dispute_id)  # customers: only photos on their own disputes
+        photo = services.appdb.dispute_photo(photo_id)
+        path = Path(photo["path"]) if photo else None
+        if not photo or photo["dispute_id"] != dispute_id or not path.is_file() or services.uploads.resolve() not in path.resolve().parents:
+            raise HTTPException(404, "Photo not found.")
+        return FileResponse(path, media_type=photo["mime"])
+
     @app.get("/api/whats-new", tags=["disputes"])
     def whats_new_for_me(user: User = Depends(current_user)):
         """New messages, replies you owe, and messages still waiting for an answer (no LLM involved)."""
@@ -581,6 +674,22 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         if dispute.get("status") == "RESOLVED":
             raise HTTPException(409, "This dispute is already resolved.")
         note = (body.note or "").strip() or None
+        if body.action == "replacement":
+            carrier, tracking = (body.carrier or "").strip(), (body.tracking_number or "").strip()
+            if len(carrier) < 2 or len(tracking) < 3:
+                raise HTTPException(422, "Add the carrier and tracking number for the replacement.")
+            text = f"We're sending you a replacement via {carrier}, tracking number {tracking}." + (f" {note}" if note else "")
+            sent = services.executor.execute("send_message_about_dispute_to_other_party",
+                                             {"dispute_id": dispute_id, "message": text}, caller=user)
+            r = services.executor.client.post(f"{services.executor.base_url}/mock/disputes/{dispute_id}/replacement",
+                                              json={"carrier": carrier, "tracking_number": tracking})
+            ok = sent.ok and r.status_code < 300
+            services.appdb.log_action(user, "send_replacement", {"dispute_id": dispute_id, "carrier": carrier,
+                                      "tracking_number": tracking}, "success" if ok else "failed", http_status=r.status_code,
+                                      result_summary=(f"dispute {dispute_id}: replacement sent" if ok else r.text)[:300], confirmed=True)
+            if not ok:
+                raise HTTPException(502, "Couldn't record the replacement. Please try again.")
+            return conversation(own_dispute(user, dispute_id))
         if body.action == "refund":
             tool, params = "accept_claim", {"dispute_id": dispute_id, **({"note": note} if note else {})}
         elif body.action == "offer":

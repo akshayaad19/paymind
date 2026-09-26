@@ -22,6 +22,7 @@ call id, so even a repeat would be replayed by PayPal, not redone.
 from __future__ import annotations
 
 import json
+from decimal import ROUND_DOWN, Decimal
 import re
 import time
 from dataclasses import dataclass, field
@@ -36,11 +37,12 @@ from langgraph.types import Command, interrupt
 from ..app.database import AppDatabase, User
 from .executor import Executor, ToolRegistry
 from .scope import check_access, filter_results
-from .tools import (BUILTIN_SCHEMAS, BUILTINS, CHECK_UPDATES, CUSTOMER_ONLY, FIND_TOOLS, ORDER_STATUS, RAG_SEARCH,
-                    REQUEST_REFUND, SYSTEM_SEARCH, tool_schema)
+from .tools import (BUILTIN_SCHEMAS, BUILTINS, CHECK_UPDATES, CLOSE_CASE, CUSTOMER_ONLY, CUSTOMER_PAYMENTS, SHOP_ONLY, FIND_TOOLS, ORDER_STATUS, RAG_SEARCH,
+                    MY_PURCHASES, PROBLEMS, REPORT_PROBLEM, REQUEST_RESOLUTION, SYSTEM_SEARCH, tool_schema)
 from .validator import money_values, validate
 
 MAX_STEPS = 8          # LLM turns per user message
+IN_STORE_REFUND_SHARE = Decimal("0.5")  # shop policy: in-store purchases can be refunded at most 50%
 LLM_WAITS = (3.0, 8.0) # extra tries when every model is busy (seconds to wait before each)
 LLM_DOWN = ("I can't reach the AI model right now (the provider is busy or out of quota), so nothing was done. "
             "Please try again in a few minutes.")
@@ -100,8 +102,11 @@ Rules:
 - check_updates also lists overdue or soon-due invoices: always mention them, with the amount and how many days overdue or left.
 - For purchase orders ('where is my order?', tracking, delivery date, orders to ship), call order_status. Customers confirm delivery or report a missing order on the Orders tab.
 - Questions about rules, policies, time limits or fees: call rag_search and answer ONLY from the passages it returns, citing the source in brackets, e.g. (Refunds and returns › Return window). Say whether it's the shop's policy or PayPal's. If it finds nothing relevant, say you couldn't find it in the policies; never answer policy questions from memory.
-- Shop refunding a customer who has an open dispute on that payment: use accept_claim on the dispute (refunds in full and closes it); for less than the full amount, make_offer_to_resolve_dispute. Use refund_captured_payment only for payments with no dispute.
-- When a customer asks the shop for a refund (their money back) on a dispute, use request_refund with a short polite message giving the reason; not a plain message. The customer confirms before it's sent.
+- Shop acting for a customer named in words ("refund Rahul", "invoice Maria"): first call customer_payments. If several customers match, list them (name and email) and ask which one; never pick by name alone. If the customer has several payments and the user didn't say which, list them (date, items, amount) and ask. For a refund, if the user gave no reason, ask for one: it's sent to the customer as the refund note. Only then call the tool.
+- Shop refunding a customer who has an open dispute on that payment: use accept_claim on the dispute (refunds the disputed amount and closes it); to settle for less than that, make_offer_to_resolve_dispute. Use refund_captured_payment only for payments with no dispute.
+- On a customer's existing open dispute, when they want their money back or a replacement, use request_resolution (wants: refund or replacement) with a short polite message; not a plain message. The customer confirms before it's sent.
+- When a customer says they're satisfied with a case (got the refund, parcel arrived, happy with the replacement), offer to close it and use close_case once they agree. Tell them the shop's refund can take a few days to show.
+- When a customer reports a NEW problem with something they bought (not working, damaged, not as described, not received, charged wrongly): 1) find the purchase with my_purchases (ask which one if several match); 2) if they haven't said, ask briefly what's wrong and whether they'd like a refund or a replacement (one short question, both together); 3) then call report_problem. For in-store purchases the shop's policy allows only a partial refund (at most 50%) or a replacement at the store: say so before they choose (rag_search has the details). Afterwards, ask them to attach a photo of the problem in the case (PayMind data → Disputes → open the case → 📎 Attach photo), which helps the shop decide quickly.
 - When the shop has made the customer an offer (check_updates shows it), explain it plainly: the amount and what accepting or declining means. Accept or decline only when the customer clearly asks, using the dispute tools; the customer confirms before anything is sent.
 - If none of your tools fits, call find_tools. For "what can you do" or "status of my last request", call system_search.
 - For totals, add up the amounts yourself and state the number.
@@ -163,7 +168,7 @@ def build_graph(deps: Deps, checkpointer=None):
                 f"I reached my step limit before finishing my answer. {summary} "
                 "Tell me if anything else is needed.")]}
         schemas = [tool_schema(deps.registry.get(n)) for n in state.get("offered", []) if deps.registry.get(n)]
-        builtins = [b for b in BUILTIN_SCHEMAS if user.is_customer or b["name"] not in CUSTOMER_ONLY]
+        builtins = [b for b in BUILTIN_SCHEMAS if b["name"] not in (SHOP_ONLY if user.is_customer else CUSTOMER_ONLY)]
         llm = deps.llm_for(schemas + builtins)
         prompt = [SystemMessage(system_prompt(user)), *state["messages"]]
         for wait in (0.0, *deps.llm_waits):
@@ -187,8 +192,18 @@ def build_graph(deps: Deps, checkpointer=None):
         decisions: dict[str, dict] = {}
         for call in state["messages"][-1].tool_calls:
             name, args = call["name"], call.get("args") or {}
-            if name == REQUEST_REFUND:
-                decisions[call["id"]] = refund_request_decision(user, args)
+            if name in (SHOP_ONLY if user.is_customer else CUSTOMER_ONLY):
+                who = "the shop" if user.is_customer else "customers"
+                decisions[call["id"]] = {"outcome": "blocked", "params": args, "errors": [f"{name} is for {who} only"]}
+                continue
+            if name == REQUEST_RESOLUTION:
+                decisions[call["id"]] = resolution_decision(user, args)
+                continue
+            if name == REPORT_PROBLEM:
+                decisions[call["id"]] = problem_decision(user, args)
+                continue
+            if name == CLOSE_CASE:
+                decisions[call["id"]] = close_decision(user, args)
                 continue
             if name in BUILTINS:
                 decisions[call["id"]] = {"outcome": "ok", "params": args}
@@ -199,20 +214,56 @@ def build_graph(deps: Deps, checkpointer=None):
                 reason = check_access(user, v.params, deps.executor)
                 if reason:
                     decision = {"outcome": "blocked", "params": v.params, "errors": [reason]}
+            if decision["outcome"] in ("ok", "needs_confirmation") and v.params.get("capture_id"):
+                problem = payment_problem(name, v.params["capture_id"], user)
+                if problem:  # e.g. refunding a payment that has an open dispute: settle the dispute instead
+                    decision = {"outcome": "invalid", "params": v.params, "errors": [problem]}
             if decision["outcome"] == "needs_confirmation":
-                answer = interrupt({"question": v.confirmation, "tool": name, "params": v.params, "large_amount": v.large_amount})
+                question = v.confirmation + who_and_what(v.params.get("capture_id"))
+                answer = interrupt({"question": question, "tool": name, "params": v.params, "large_amount": v.large_amount})
                 decision["approved"] = str(answer).strip().lower() in YES
             decisions[call["id"]] = decision
         return {"decisions": decisions}
 
-    def refund_request_decision(user: User, args: dict) -> dict:
-        """request_refund is a write: customers only, on their own open dispute, confirmed by the user."""
+    def payment_problem(tool: str, capture_id: str, user: User) -> str | None:
+        """Code rules on a payment before a write, whatever the model decided."""
+        if tool != "refund_captured_payment":
+            return None
+        disputes = deps.executor.execute("list_disputes", {"page_size": 50}, caller=user)
+        open_case = next((d["dispute_id"] for d in (disputes.body.get("items", []) if disputes.ok else [])
+                          if d["disputed_transactions"][0]["seller_transaction_id"] == capture_id and d.get("status") != "RESOLVED"), None)
+        if open_case:
+            return (f"payment {capture_id} has an open dispute ({open_case}): don't refund the payment directly; settle the "
+                    "dispute with accept_claim (refunds the disputed amount) or make_offer_to_resolve_dispute")
+        return None
+
+    def who_and_what(capture_id: str | None) -> str:
+        """Who gets the money and for what, written by code for the confirmation, so the user checks the
+        real customer and purchase, not the model's description of them."""
+        if not capture_id:
+            return ""
+        from ..app.purchases import purchase_details
+
+        p = purchase_details(capture_id, deps.executor)
+        if not p:
+            return ""
+        c = p.get("customer") or {}
+        who = f"{c.get('name') or 'Unknown customer'}" + (f" ({c['email']})" if c.get("email") else "")
+        what = ", ".join(p["items"]) or "a purchase"
+        return f"\n\nTo: {who}\nFor: {what}, paid {p['amount']} USD on {p['date'][:10]} ({p['paid_how']})"
+
+    def confirm(question: str, tool: str, params: dict) -> dict:
+        answer = interrupt({"question": question, "tool": tool, "params": params, "large_amount": False})
+        return {"outcome": "needs_confirmation", "params": params, "approved": str(answer).strip().lower() in YES}
+
+    def resolution_decision(user: User, args: dict) -> dict:
+        """request_resolution is a write: on the customer's own open dispute, refund or replacement, confirmed."""
         dispute_id, message = str(args.get("dispute_id") or "").strip(), str(args.get("message") or "").strip()
-        params = {"dispute_id": dispute_id, "message": message}
-        if not user.is_customer:
-            return {"outcome": "blocked", "params": params, "errors": ["only customers can request a refund"]}
-        if not dispute_id or not message:
-            return {"outcome": "invalid", "params": params, "errors": ["dispute_id and message are both required"]}
+        wants = str(args.get("wants") or "").strip().lower()
+        params = {"dispute_id": dispute_id, "wants": wants, "message": message}
+        if not dispute_id or not message or wants not in ("refund", "replacement"):
+            return {"outcome": "invalid", "params": params,
+                    "errors": ["dispute_id, message and wants (refund or replacement) are all required; ask the customer which they want"]}
         found = deps.executor.execute("show_dispute_details", {"dispute_id": dispute_id}, caller=user)
         if not found.ok:
             return {"outcome": "invalid", "params": params, "errors": [f"no dispute {dispute_id}: look it up with list_disputes first"]}
@@ -222,26 +273,103 @@ def build_graph(deps: Deps, checkpointer=None):
             return {"outcome": "invalid", "params": params, "errors": ["this dispute is already resolved"]}
         amount = found.body["dispute_amount"]
         params["amount"] = amount
-        answer = interrupt({"question": f"Ask the shop for a full refund of {amount['value']} {amount['currency_code']} "
-                                        f"(dispute_id={dispute_id})?\n\n“{message[:600]}”",
-                            "tool": REQUEST_REFUND, "params": params, "large_amount": False})
-        return {"outcome": "needs_confirmation", "params": params, "approved": str(answer).strip().lower() in YES}
+        ask = (f"refund {amount['value']} {amount['currency_code']}, the disputed amount" if wants == "refund"
+               else "send a replacement")
+        return confirm(f"Ask the shop to {ask} (dispute_id={dispute_id})?\n\n“{message[:600]}”", REQUEST_RESOLUTION, params)
 
-    def run_refund_request(user: User, params: dict, session_id: str | None, cid: str) -> tuple[str, bool]:
-        """Send the message to the shop, then record the request. Returns (result for the LLM, ok)."""
+    def close_decision(user: User, args: dict) -> dict:
+        """close_case: only the customer's own open dispute, confirmed."""
+        dispute_id, message = str(args.get("dispute_id") or "").strip(), str(args.get("message") or "").strip()
+        params = {"dispute_id": dispute_id, "message": message}
+        found = deps.executor.execute("show_dispute_details", {"dispute_id": dispute_id}, caller=user) if dispute_id else None
+        if not found or not found.ok:
+            return {"outcome": "invalid", "params": params, "errors": [f"no dispute {dispute_id or '(none given)'}: look it up with list_disputes first"]}
+        if check_access(user, params, deps.executor):
+            return {"outcome": "blocked", "params": params, "errors": [f"dispute {dispute_id} does not belong to this customer"]}
+        if found.body.get("status") == "RESOLVED":
+            return {"outcome": "invalid", "params": params, "errors": ["this dispute is already closed"]}
+        note = f"\n\n“{message[:600]}”" if message else ""
+        return confirm(f"Close case {dispute_id} as resolved? The shop will be told you're satisfied.{note}", CLOSE_CASE, params)
+
+    def run_close_case(user: User, params: dict, session_id: str | None) -> tuple[str, bool]:
+        r = deps.executor.client.post(f"{deps.executor.base_url}/mock/disputes/{params['dispute_id']}/close",
+                                      json={"message": params.get("message") or ""})
+        ok = r.status_code < 300
+        deps.appdb.log_action(user, CLOSE_CASE, params, "success" if ok else "failed", session_id=session_id, method="POST",
+                              path=f"/mock/disputes/{params['dispute_id']}/close", http_status=r.status_code,
+                              result_summary=(f"case {params['dispute_id']} closed by the customer" if ok else r.text)[:300], confirmed=True)
+        if not ok:
+            return compact({"ok": False, "error": r.text[:300]}), False
+        return compact({"ok": True, "result": "The case is closed as resolved; the shop has been told."}), True
+
+    def problem_decision(user: User, args: dict) -> dict:
+        """report_problem opens a new case: only on the customer's own purchase, with no case already open."""
+        from ..app.purchases import customer_purchases
+
+        payment_id, message = str(args.get("payment_id") or "").strip(), str(args.get("message") or "").strip()
+        problem, wants = str(args.get("problem") or ""), str(args.get("wants") or "").strip().lower()
+        params = {"payment_id": payment_id, "problem": problem, "wants": wants, "message": message}
+        if not payment_id or not message or problem not in PROBLEMS or wants not in ("refund", "replacement"):
+            return {"outcome": "invalid", "params": params, "errors": [
+                "payment_id (from my_purchases), problem, wants (refund or replacement: ask the customer) and message are all required"]}
+        purchase = next((p for p in customer_purchases(user, deps.executor) if p["payment_id"] == payment_id), None)
+        if purchase is None:
+            return {"outcome": "invalid", "params": params, "errors": [f"{payment_id} is not one of this customer's purchases: use my_purchases"]}
+        if purchase["open_case"]:
+            return {"outcome": "invalid", "params": params, "errors": [
+                f"this purchase already has an open case ({purchase['open_case']}): use request_resolution on it"]}
+        left = Decimal(purchase["left"])
+        limit, why = left, "what's left of this payment"
+        if purchase["paid_how"] == "in store" and wants == "refund":  # shop policy: in-store purchases get partial refunds only
+            limit = min(left, (Decimal(purchase["amount"]) * IN_STORE_REFUND_SHARE).quantize(Decimal("0.01"), rounding=ROUND_DOWN))
+            why = (f"the shop's policy: in-store purchases can get at most {IN_STORE_REFUND_SHARE:.0%} back; "
+                   "tell the customer and offer the partial refund or a replacement at the store")
+        try:
+            amount = Decimal(str(args.get("amount") or limit)).quantize(Decimal("0.01"))
+        except Exception:
+            return {"outcome": "invalid", "params": params, "errors": ["amount must be a number like 29.99"]}
+        if not Decimal("0.01") <= amount <= limit:
+            return {"outcome": "invalid", "params": params, "errors": [f"amount must be between 0.01 and {limit} ({why})"]}
+        params |= {"amount": {"currency_code": "USD", "value": f"{amount:.2f}"}, "items": ", ".join(purchase["items"]) or "your purchase"}
+        ask = f"a refund of {amount:.2f} USD" if wants == "refund" else "a replacement"
+        when = purchase["date"][:10]
+        return confirm(f"Report a problem with {params['items']} (paid {purchase['amount']} USD on {when}) and ask the shop "
+                       f"for {ask}?\n\n“{message[:600]}”", REPORT_PROBLEM, params)
+
+    def run_resolution(user: User, params: dict, session_id: str | None, cid: str) -> tuple[str, bool]:
+        """Send the message to the shop, then record what the customer asked for. Returns (result for the LLM, ok)."""
         send = {"dispute_id": params["dispute_id"], "message": params["message"]}
         result = deps.executor.execute("send_message_about_dispute_to_other_party", send,
                                        request_id=f"pm-{session_id}-{cid}", caller=user)
         card = deps.registry.get("send_message_about_dispute_to_other_party") or {}
-        deps.appdb.log_action(user, REQUEST_REFUND, params, "success" if result.ok else "failed", session_id=session_id,
+        deps.appdb.log_action(user, REQUEST_RESOLUTION, params, "success" if result.ok else "failed", session_id=session_id,
                               method=card.get("method"), path=card.get("path"), http_status=result.status_code,
-                              result_summary=(result.error or f"refund requested on {params['dispute_id']}")[:300],
+                              result_summary=(result.error or f"{params['wants']} requested on {params['dispute_id']}")[:300],
                               confirmed=True, request_id=result.request_id)
         if not result.ok:
             return compact({"ok": False, "error": result.error}), False
-        deps.appdb.request_refund(user.user_id, params["dispute_id"], params["amount"], params["message"])
-        return compact({"ok": True, "result": "Refund request sent to the shop. The dispute now shows 'Refund requested' "
-                                              "until the shop refunds or makes an offer."}), True
+        deps.appdb.request_refund(user.user_id, params["dispute_id"], params["amount"], params["message"], wants=params["wants"])
+        return compact({"ok": True, "result": f"Sent. The dispute now shows '{params['wants'].capitalize()} requested' until the "
+                                              "shop answers. Tell the customer they can attach a photo in the case: PayMind data → "
+                                              "Disputes → open it → 📎 Attach photo."}), True
+
+    def run_report_problem(user: User, params: dict, session_id: str | None) -> tuple[str, bool]:
+        """Open the case with the shop (mock: POST /mock/disputes), then record refund or replacement."""
+        body = {"capture_id": params["payment_id"], "reason": PROBLEMS[params["problem"]], "amount": params["amount"],
+                "message": params["message"]}
+        r = deps.executor.client.post(f"{deps.executor.base_url}/mock/disputes", json=body)
+        ok = r.status_code < 300
+        dispute = r.json() if ok else {}
+        deps.appdb.log_action(user, REPORT_PROBLEM, params, "success" if ok else "failed", session_id=session_id,
+                              method="POST", path="/mock/disputes", http_status=r.status_code,
+                              result_summary=(f"case {dispute.get('dispute_id')} opened" if ok else r.text)[:300], confirmed=True)
+        if not ok:
+            return compact({"ok": False, "error": r.text[:300]}), False
+        deps.appdb.request_refund(user.user_id, dispute["dispute_id"], params["amount"], params["message"], wants=params["wants"])
+        return compact({"ok": True, "dispute_id": dispute["dispute_id"], "result": (
+            f"Case opened with the shop; it shows '{params['wants'].capitalize()} requested'. The shop has until "
+            f"{dispute.get('seller_response_due_date', '')[:10]} to respond. Ask the customer to attach a photo of the problem: "
+            "PayMind data → Disputes → open the case → 📎 Attach photo.")}), True
 
     # ---- tools: run what the gate allowed ----------------------------------------------------
     def run_builtin(name: str, args: dict, user: User, state: AgentState) -> tuple[str, list[str]]:
@@ -270,6 +398,15 @@ def build_graph(deps: Deps, checkpointer=None):
                     "paid_at", "carrier", "tracking_number", "shipped_at", "delivered_at", "not_received_note", "reject_reason")
             rows = [{k: p.get(k) for k in keep} for p in (sync_po_payment(p, deps.executor, deps.appdb) for p in pos)]
             return compact(rows or "No purchase orders found."), []
+        if name == CUSTOMER_PAYMENTS:
+            from ..app.purchases import customer_payments
+
+            return compact(customer_payments(args.get("query", ""), deps.executor, caller=user, item=args.get("item"))), []
+        if name == MY_PURCHASES:
+            from ..app.purchases import customer_purchases
+
+            rows = customer_purchases(user, deps.executor, item=args.get("item"))
+            return compact(rows or "No purchases in the last 90 days."), []
         if name == FIND_TOOLS:
             hits = deps.search(args.get("query", ""), role=user.role, k=TOP_K)
             return compact([{"tool": n, "description": d} for n, d in hits]), [n for n, _ in hits]
@@ -296,21 +433,30 @@ def build_graph(deps: Deps, checkpointer=None):
             audit = dict(session_id=session_id, method=card.get("method"), path=card.get("path"))
 
             action = {"tool": name, "label": action_label(card, name, params), "write": card.get("action_type") == "write"}
-            if name == REQUEST_REFUND:
-                action = {"tool": name, "label": action_label({"title": "Request refund"}, name, params), "write": True}
-            if name == REQUEST_REFUND and decision["outcome"] == "needs_confirmation" and decision.get("approved"):
-                content, ok = run_refund_request(user, params, session_id, cid)
-                actions.append(action | ({"outcome": "done"} if ok else {"outcome": "failed", "error": "PayPal refused the message"}))
-            elif name == REQUEST_REFUND and decision["outcome"] == "needs_confirmation":
-                content = "The user declined, so nothing was done. Tell them it was cancelled; don't retry."
-                deps.appdb.log_action(user, name, params, "declined", **audit)
-                actions.append(action | {"outcome": "declined"})
-            elif name == REQUEST_REFUND and decision["outcome"] == "blocked":
+            if name in (REQUEST_RESOLUTION, REPORT_PROBLEM, CLOSE_CASE):
+                title = {"refund": "Request refund", "replacement": "Request replacement"}.get(params.get("wants"), "Request")
+                if name == REPORT_PROBLEM:
+                    title = f"Report problem · {title.split()[-1]}"
+                if name == CLOSE_CASE:
+                    title = f"Close case {params.get('dispute_id', '')}"
+                action = {"tool": name, "label": action_label({"title": title}, name, params if params.get("wants") != "replacement" else {}), "write": True}
+                if decision["outcome"] == "needs_confirmation" and decision.get("approved"):
+                    content, ok = (run_resolution(user, params, session_id, cid) if name == REQUEST_RESOLUTION
+                                   else run_close_case(user, params, session_id) if name == CLOSE_CASE
+                                   else run_report_problem(user, params, session_id))
+                    actions.append(action | ({"outcome": "done"} if ok else {"outcome": "failed", "error": "the shop's system refused it"}))
+                elif decision["outcome"] == "needs_confirmation":
+                    content = "The user declined, so nothing was done. Tell them it was cancelled; don't retry."
+                    deps.appdb.log_action(user, name, params, "declined", **audit)
+                    actions.append(action | {"outcome": "declined"})
+                elif decision["outcome"] == "blocked":
+                    content = "Not allowed: " + "; ".join(decision["errors"]) + ". Tell the user plainly; don't retry."
+                    deps.appdb.log_action(user, name, params, "blocked", result_summary=content, **audit)
+                    actions.append(action | {"outcome": "blocked"})
+                else:
+                    content = "Not run. Fix these problems and try again: " + "; ".join(decision["errors"])
+            elif name in CUSTOMER_ONLY | SHOP_ONLY and decision["outcome"] == "blocked":
                 content = "Not allowed: " + "; ".join(decision["errors"]) + ". Tell the user plainly; don't retry."
-                deps.appdb.log_action(user, name, params, "blocked", result_summary=content, **audit)
-                actions.append(action | {"outcome": "blocked"})
-            elif name == REQUEST_REFUND:
-                content = "Not run. Fix these problems and try again: " + "; ".join(decision["errors"])
             elif name in BUILTINS:
                 content, new_tools = run_builtin(name, params, user, state)
                 offered += [t for t in new_tools if t not in offered]

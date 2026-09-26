@@ -144,6 +144,7 @@
     </div>
     <div class="drawer-actions">
       <button class="btn btn-primary" id="resolve-open" hidden>Resolve…</button>
+      <button class="btn btn-primary" id="case-close" hidden>✅ Mark as resolved</button>
       <button class="btn btn-ghost btn-icon" id="drawer-close" aria-label="Close">✕</button>
     </div>
   </header>
@@ -152,9 +153,12 @@
     <div class="resolve-options" id="resolve-options">
       <label><input type="radio" name="resolve" value="refund" checked> <b>Refund in full</b><small id="resolve-refund-text"></small></label>
       <label><input type="radio" name="resolve" value="offer"> <b>Make an offer</b><small>Offer a partial refund; the customer accepts or declines</small></label>
+      <label><input type="radio" name="resolve" value="replacement"> <b>Send a replacement</b><small>Ship a new one (no refund); the customer gets the tracking number and the case closes</small></label>
     </div>
     <div class="resolve-fields">
       <label data-for="offer" hidden>Offer amount (USD)<input id="resolve-amount" inputmode="decimal" placeholder="e.g. 20.00"></label>
+      <label data-for="replacement" hidden>Carrier<input id="resolve-carrier" placeholder="e.g. Blue Dart"></label>
+      <label data-for="replacement" hidden>Tracking number<input id="resolve-tracking" placeholder="e.g. BD123456789IN"></label>
       <label>Note to the customer (optional)<input id="resolve-note" placeholder="Shown with the resolution"></label>
     </div>
     <div class="resolve-actions">
@@ -163,6 +167,7 @@
     </div>
   </div>
   <form class="drawer-composer" id="thread-form">
+    <label class="btn btn-ghost btn-icon attach" id="thread-attach" title="Attach a photo">📎<input type="file" id="thread-photo" accept="image/jpeg,image/png,image/webp,image/heic" hidden></label>
     <textarea id="thread-input" rows="2" maxlength="2000" placeholder="Write a message…"></textarea>
     <button class="btn btn-primary" type="submit" id="thread-send">Send</button>
   </form>

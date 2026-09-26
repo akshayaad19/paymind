@@ -147,7 +147,8 @@ class Store:
             if tx.get("seller_transaction_id") != capture_id or dispute.get("status") == "RESOLVED":
                 continue
             dispute.update(status="RESOLVED", dispute_state="RESOLVED", refund_id=refund_id, update_time=iso(when),
-                           dispute_outcome={"outcome_code": "RESOLVED_BUYER_FAVOUR", "amount_refunded": dispute["dispute_amount"]})
+                           dispute_outcome={"outcome_code": "RESOLVED_BUYER_FAVOUR", "amount_refunded": dispute["dispute_amount"],
+                                            "closed_by": "SELLER"})
             dispute.pop("offer", None)
             self.db.put("disputes", dispute)
 

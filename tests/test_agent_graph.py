@@ -2,6 +2,7 @@
 executor, mock PayPal server and audit log. No Gemini quota used."""
 
 import json
+from datetime import datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -105,7 +106,8 @@ def test_write_waits_for_yes_then_runs_once(world):
 
     reply = agent.send("u_asha", "s1", f"refund 5 dollars on payment {cap}")
     assert reply.text is None
-    assert reply.confirmation["question"] == f"Refund captured payment for 5 USD (capture_id={cap})?"
+    q = reply.confirmation["question"]
+    assert q.startswith(f"Refund captured payment for 5 USD (capture_id={cap})?") and "\n\nTo: " in q and "\nFor: " in q
     assert refunds_on(mock, cap) == []  # nothing happens before the yes
 
     reply = agent.answer("u_asha", "s1", approve=True)
@@ -305,7 +307,7 @@ def test_check_updates_uses_the_whats_new_summary(world):
     dispute = rahuls_dispute(mock)
     llm = ScriptedLLM([AIMessage("", tool_calls=[call("check_updates", {})]),
                        lambda msgs: AIMessage(json.dumps(tool_results(msgs)[-1]))])
-    items = {i["dispute_id"]: i for i in json.loads(make_agent(world, llm, []).send("u_asha", "s1", "anything new?").text)}
+    items = {i["dispute_id"]: i for i in json.loads(make_agent(world, llm, []).send("u_asha", "s1", "anything new?").text) if "dispute_id" in i}
     assert items[dispute["dispute_id"]]["kind"] == "new_message" and items[dispute["dispute_id"]]["with"] == "Rahul Sharma"
     assert all("RESOLVED" != mock.state.store.db.get("disputes", d)["status"] for d in items)
 
@@ -315,6 +317,9 @@ def test_nothing_new(world):
     for d in mock.state.store.db.all("disputes"):     # the shop resolves every open dispute
         if d["status"] != "RESOLVED":
             world[1].execute("accept_claim", {"dispute_id": d["dispute_id"]}, caller=appdb.get_user("u_asha"))
+    for inv in mock.state.store.db.all("invoices"):   # ...and every invoice is paid (none overdue)
+        if inv["status"] in ("SENT", "UNPAID"):
+            world[1].client.post(f"http://testserver/mock/invoices/{inv['id']}/pay")
     llm = ScriptedLLM([AIMessage("", tool_calls=[call("check_updates", {})]),
                        lambda msgs: AIMessage(str(tool_results(msgs)[-1]))])
     assert "Nothing new" in make_agent(world, llm, []).send("u_asha", "s1", "anything new?").text
@@ -395,7 +400,7 @@ def test_whats_new_kinds():
     asha, rahul = appdb.get_user("u_asha"), appdb.get_user("u_rahul")
     rid = rahuls_dispute(mock)["dispute_id"]
     now = datetime.now(timezone.utc)
-    items = lambda user, at=now: {i["dispute_id"]: i for i in whats_new(user, executor, appdb, now=at)}
+    items = lambda user, at=now: {i["dispute_id"]: i for i in whats_new(user, executor, appdb, now=at) if "dispute_id" in i}
 
     first = items(asha)[rid]
     assert first["kind"] == "new_message" and first["action_needed"] and first["due_date"]   # his claim, her turn, deadline
@@ -484,7 +489,7 @@ def dispute_of(mock, payer_id):
 
 def refund_request_script(dispute_id):
     return ScriptedLLM([
-        AIMessage("", tool_calls=[call("request_refund", {"dispute_id": dispute_id, "message": "Still not here. Please refund me."})]),
+        AIMessage("", tool_calls=[call("request_resolution", {"dispute_id": dispute_id, "wants": "refund", "message": "Still not here. Please refund me."})]),
         AIMessage("I've asked the shop for a refund."),
     ])
 
@@ -497,7 +502,7 @@ def test_customer_requests_a_refund(world):
     llm = refund_request_script(d["dispute_id"])
     agent = make_agent(world, llm, ["list_disputes"])
     reply = agent.send("u_rahul", "s1", "ask the shop for a refund")
-    assert "full refund of 79.99 USD" in reply.confirmation["question"] and "Please refund me" in reply.confirmation["question"]
+    assert "refund 79.99 USD, the disputed amount" in reply.confirmation["question"] and "Please refund me" in reply.confirmation["question"]
     assert appdb.refund_requests() == {}  # nothing before the yes
 
     reply = agent.answer("u_rahul", "s1", approve=True)
@@ -526,12 +531,13 @@ def test_customer_cannot_request_refund_on_someone_elses_dispute(world):
     assert reply.receipt["summary"].startswith("⛔ Not allowed: Request refund")
 
 
-def test_refund_request_is_only_offered_to_customers(world):
+def test_customer_tools_are_only_offered_to_customers(world):
     llm = ScriptedLLM([AIMessage("ok")])
     agent = make_agent(world, llm, ["list_disputes"])
     agent.send("u_asha", "s1", "hi")
     agent.send("u_rahul", "s2", "hi")
-    assert "request_refund" not in llm.seen_tools[0] and "request_refund" in llm.seen_tools[1]
+    for tool in ("request_resolution", "report_problem", "my_purchases"):
+        assert tool not in llm.seen_tools[0] and tool in llm.seen_tools[1]
 
 
 def test_whats_new_lists_overdue_invoices(world):
@@ -548,17 +554,26 @@ def test_whats_new_lists_overdue_invoices(world):
     assert priya == []  # her invoice is paid
 
 
-def test_priyas_double_charge_is_visible_in_the_data(world):
-    """Demo story: INV-1005 paid at 09:16, then the same $29.99 charged again at 09:18 (the disputed one)."""
-    mock = world[0]
-    db = mock.state.store.db
+def test_priyas_wrong_invoice_is_visible_in_the_data(world):
+    """Demo story: Priya ordered one charger, INV-1005 billed two ($59.98), she paid it and disputes the extra $29.99."""
+    db = world[0].state.store.db
     inv = next(i for i in db.all("invoices") if i["detail"]["invoice_number"] == "INV-1005")
-    assert inv["status"] == "PAID" and inv["payments"]["transactions"][0]["payment_id"] == "QLMSLO1T4FSZFOF2T"
-    pays = sorted((c["create_time"], c["amount"]["value"], c.get("invoice_id")) for c in db.all("captures")
-                  if c["payer"]["payer_id"] == "user_456" and c["create_time"].startswith("2026-09-20"))
-    assert pays == [("2026-09-20T09:16:00Z", "29.99", inv["id"]), ("2026-09-20T09:18:00Z", "29.99", None)]
-    dispute = next(d for d in db.all("disputes") if d["reason"] == "DUPLICATE_TRANSACTION")
-    assert dispute["disputed_transactions"][0]["seller_transaction_id"] == "W3WH38EB85I8IQ760"
+    assert inv["status"] == "PAID" and inv["items"][0]["quantity"] == "2" and inv["amount"]["value"] == "59.98"
+    payment = db.get("captures", inv["payments"]["transactions"][0]["payment_id"])
+    assert payment["amount"]["value"] == "59.98" and payment["invoice_id"] == inv["id"]
+    dispute = next(d for d in db.all("disputes") if d["reason"] == "INCORRECT_AMOUNT")
+    assert dispute["dispute_amount"]["value"] == "29.99" and dispute["disputed_transactions"][0]["seller_transaction_id"] == payment["id"]
+
+
+def test_settling_priyas_dispute_refunds_only_the_extra_charger(world):
+    """accept_claim refunds the disputed $29.99 (not the whole $59.98) and closes the dispute."""
+    mock, executor, _ = world
+    db = mock.state.store.db
+    dispute = next(d for d in db.all("disputes") if d["reason"] == "INCORRECT_AMOUNT")
+    assert executor.execute("accept_claim", {"dispute_id": dispute["dispute_id"]}).ok
+    capture = db.get("captures", dispute["disputed_transactions"][0]["seller_transaction_id"])
+    assert capture["refunded_amount"]["value"] == "29.99" and capture["status"] == "PARTIALLY_REFUNDED"
+    assert db.get("disputes", dispute["dispute_id"])["status"] == "RESOLVED"
 
 
 # ---- streaming ------------------------------------------------------------------------------------
@@ -585,3 +600,145 @@ def test_stream_stops_at_the_confirmation_and_resumes(world):
     second = list(agent.stream("u_asha", "s1", approve=True))
     assert second[-1]["reply"] == "Done." and second[-1]["receipt"]["summary"].startswith("✅ Done")
     assert len(refunds_on(mock, cap)) == 1
+
+
+# ---- new problem reports: which purchase, refund or replacement, a case with the shop -------------------
+
+def rahuls_headphones(world):
+    from paymind.app.purchases import customer_purchases
+
+    mock, executor, appdb = world
+    buys = customer_purchases(appdb.get_user("u_rahul"), executor, item="earphones", now=datetime(2026, 9, 26, tzinfo=timezone.utc), days=120)
+    return next(b for b in buys if b["date"].startswith("2026-07-23"))  # in store, not refunded
+
+
+def test_my_purchases_lists_only_own_purchases_with_items(world):
+    from paymind.app.purchases import customer_purchases
+
+    _, executor, appdb = world
+    now = datetime(2026, 9, 26, tzinfo=timezone.utc)
+    rahul = customer_purchases(appdb.get_user("u_rahul"), executor, now=now)
+    priya = customer_purchases(appdb.get_user("u_priya"), executor, now=now)
+    assert rahul and not {b["payment_id"] for b in rahul} & {b["payment_id"] for b in priya}
+    charger = next(b for b in priya if b["paid_how"] == "invoice")
+    assert charger["items"] == ["USB-C Charger × 2"] and charger["open_case"]  # her wrong-amount dispute
+    headphones = rahuls_headphones(world)
+    assert headphones["items"] == ["Wireless Headphones × 1"] and headphones["paid_how"] == "in store"
+
+
+def problem_script(payment_id, wants="replacement", amount=None):
+    args = {"payment_id": payment_id, "problem": "not_working", "wants": wants,
+            "message": "My headphones stopped working after two weeks: the left side has no sound."}
+    if amount:
+        args["amount"] = amount
+    return ScriptedLLM([AIMessage("", tool_calls=[call("report_problem", args)]), AIMessage("Case opened.")])
+
+
+def test_customer_reports_a_new_problem_and_asks_for_a_replacement(world):
+    from paymind.app.updates import open_refund_request, whats_new
+
+    mock, executor, appdb = world
+    buy = rahuls_headphones(world)
+    agent = make_agent(world, problem_script(buy["payment_id"]), ["list_disputes"])
+    reply = agent.send("u_rahul", "s1", "my earphones stopped working, I want a replacement")
+    q = reply.confirmation["question"]
+    assert "Wireless Headphones × 1" in q and "a replacement" in q and "left side has no sound" in q
+    reply = agent.answer("u_rahul", "s1", approve=True)
+    assert reply.receipt["summary"] == "✅ Done: Report problem · replacement"
+    case = next(d for d in mock.state.store.db.all("disputes") if d["disputed_transactions"][0]["seller_transaction_id"] == buy["payment_id"])
+    assert case["status"] == "WAITING_FOR_SELLER_RESPONSE" and case["reason"] == "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED"
+    assert case["dispute_amount"]["value"] == "79.99" and case["messages"][0]["posted_by"] == "BUYER"
+    assert open_refund_request(case, appdb.refund_requests())["wants"] == "replacement"
+    shop = whats_new(appdb.get_user("u_asha"), executor, appdb)
+    assert any(i["kind"] == "refund_requested" and i["dispute_id"] == case["dispute_id"] for i in shop)
+
+
+def test_problem_report_checks_the_purchase(world):
+    mock, _, appdb = world
+    priya_buy = next(c["id"] for c in mock.state.store.db.all("captures") if c["payer"]["payer_id"] == "user_456")
+    reply = make_agent(world, problem_script(priya_buy), ["list_disputes"]).send("u_rahul", "s1", "broken")
+    assert reply.confirmation is None and not appdb.refund_requests()  # not his purchase: sent back to the LLM
+    buy = rahuls_headphones(world)
+    reply = make_agent(world, problem_script(buy["payment_id"], wants="refund", amount="500.00"), ["list_disputes"]).send("u_rahul", "s2", "refund")
+    assert reply.confirmation is None  # more than he paid
+
+
+def test_mock_refuses_a_second_open_case_on_the_same_payment(world):
+    mock, executor, _ = world
+    buy = rahuls_headphones(world)
+    body = {"capture_id": buy["payment_id"], "reason": "MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED", "message": "broken"}
+    assert executor.client.post("http://testserver/mock/disputes", json=body).status_code == 200
+    r = executor.client.post("http://testserver/mock/disputes", json=body)
+    assert r.status_code == 422 and "DISPUTE_ALREADY_OPEN" in r.text
+
+
+# ---- acting for a customer named in words: identify exactly --------------------------------------------
+
+def test_customer_payments_finds_customers_by_name_or_email(world):
+    from paymind.app.purchases import customer_payments
+
+    _, executor, _ = world
+    now = datetime(2026, 9, 26, tzinfo=timezone.utc)
+    rahul = customer_payments("rahul", executor, now=now)
+    assert [c["email"] for c in rahul["customers"]] == ["rahul.sharma@example.com"] and rahul["customers"][0]["payments"]
+    assert customer_payments("priya.nair@example.com", executor, now=now)["customers"][0]["name"] == "Priya Nair"
+    many = customer_payments("example.com", executor, now=now)          # matches several customers
+    assert len(many["customers"]) > 1 and "ask the user which one" in many["note"]
+    assert customer_payments("nobody-like-this", executor, now=now)["customers"] == []
+
+
+def test_refund_on_a_disputed_payment_is_sent_back(world):
+    """Code rule: a payment with an open dispute is settled through the dispute, never refunded directly."""
+    mock, _, appdb = world
+    disputed = rahuls_dispute(mock)["disputed_transactions"][0]["seller_transaction_id"]
+    llm = ScriptedLLM([
+        AIMessage("", tool_calls=[call("refund_captured_payment", {"capture_id": disputed, "amount": usd("49.00")})]),
+        lambda msgs: AIMessage(tool_results(msgs)[-1]),
+    ])
+    reply = make_agent(world, llm, ["refund_captured_payment"]).send("u_asha", "s1", f"refund 49 on {disputed}")
+    assert reply.confirmation is None and "open dispute" in reply.text and "accept_claim" in reply.text
+    assert refunds_on(mock, disputed) == []
+
+
+def test_refund_confirmation_names_the_customer_and_purchase(world):
+    mock = world[0]
+    disputed = {d["disputed_transactions"][0]["seller_transaction_id"] for d in mock.state.store.db.all("disputes")}
+    cap = next(c for c in mock.state.store.db.all("captures") if c["status"] == "COMPLETED" and c["id"] not in disputed
+               and c["payer"]["payer_id"] == "user_123")
+    agent = make_agent(world, refund_script(cap["id"]), ["refund_captured_payment"])
+    q = agent.send("u_asha", "s1", f"refund 5 dollars on payment {cap['id']}").confirmation["question"]
+    assert "To: Rahul Sharma (rahul.sharma@example.com)" in q and "For: " in q
+
+
+def test_customers_and_shop_get_their_own_tools(world):
+    llm = ScriptedLLM([AIMessage("ok")])
+    agent = make_agent(world, llm, ["list_disputes"])
+    agent.send("u_asha", "s1", "hi")
+    agent.send("u_rahul", "s2", "hi")
+    assert "customer_payments" in llm.seen_tools[0] and "customer_payments" not in llm.seen_tools[1]
+
+
+def test_customer_closes_a_case_from_chat(world):
+    mock, _, _ = world
+    d = dispute_of(mock, "user_123")
+    llm = ScriptedLLM([AIMessage("", tool_calls=[call("close_case", {"dispute_id": d["dispute_id"], "message": "Refund received, thanks."})]),
+                       AIMessage("Closed.")])
+    agent = make_agent(world, llm, ["list_disputes"])
+    assert "Close case" in agent.send("u_rahul", "s1", "I got my refund, close it").confirmation["question"]
+    reply = agent.answer("u_rahul", "s1", approve=True)
+    assert reply.receipt["summary"].startswith("✅ Done: Close case")
+    closed = mock.state.store.db.get("disputes", d["dispute_id"])
+    assert closed["status"] == "RESOLVED" and closed["messages"][-1]["content"] == "✅ Refund received, thanks."
+
+
+def test_in_store_purchase_gets_at_most_half_back(world):
+    """Shop policy (refunds-and-returns.md › In-store purchases): partial refunds only, at most 50%."""
+    buy = rahuls_headphones(world)                     # $79.99, bought in store
+    assert buy["paid_how"] == "in store"
+    full = make_agent(world, problem_script(buy["payment_id"], wants="refund", amount="79.99"), ["list_disputes"])
+    assert full.send("u_rahul", "s1", "refund my headphones").confirmation is None        # refused: over 50%
+    default = make_agent(world, problem_script(buy["payment_id"], wants="refund"), ["list_disputes"])
+    q = default.send("u_rahul", "s2", "refund my headphones").confirmation["question"]
+    assert "a refund of 39.99 USD" in q                                                    # 50% of 79.99, rounded down
+    replacement = make_agent(world, problem_script(buy["payment_id"], wants="replacement"), ["list_disputes"])
+    assert "a replacement" in replacement.send("u_rahul", "s3", "replace them").confirmation["question"]
