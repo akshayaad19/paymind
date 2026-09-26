@@ -178,7 +178,8 @@ def accept_claim(request: Request, dispute_id: str, body: dict = Body(default={}
         raise PayPalError(422, "INVALID_REFUND_AMOUNT", "The refund must be between 0.01 and the disputed amount.", "refund_amount")
     refund = refund_buyer(store, dispute, amount, note=body.get("note"))
     shop_acted(store, dispute, {"type": "refund", "amount": refund["amount"], "refund_id": refund["id"], "note": body.get("note")})
-    return update(store, dispute, "WAITING_FOR_BUYER_RESPONSE", "REQUIRED_OTHER_PARTY_ACTION")
+    result = update(store, dispute, "WAITING_FOR_BUYER_RESPONSE", "REQUIRED_OTHER_PARTY_ACTION")
+    return {**result, "refund": {"id": refund["id"], "amount": refund["amount"]}}  # what was actually refunded
 
 
 @router.post("/{dispute_id}/make-offer")

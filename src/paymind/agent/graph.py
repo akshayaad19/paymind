@@ -102,8 +102,8 @@ Rules:
 - check_updates also lists overdue or soon-due invoices: always mention them, with the amount and how many days overdue or left.
 - For purchase orders ('where is my order?', tracking, delivery date, orders to ship), call order_status. Customers confirm delivery or report a missing order on the Orders tab.
 - Questions about rules, policies, time limits or fees: call rag_search and answer ONLY from the passages it returns, citing the source in brackets, e.g. (Refunds and returns › Return window). Say whether it's the shop's policy or PayPal's. If it finds nothing relevant, say you couldn't find it in the policies; never answer policy questions from memory.
-- Shop acting for a customer named in words ("refund Rahul", "invoice Maria"): first call customer_payments. If several customers match, list them (name and email) and ask which one; never pick by name alone. If the customer has several payments and the user didn't say which, list them (date, items, amount) and ask. For a refund, if the user gave no reason, ask for one: it's sent to the customer as the refund note. Only then call the tool.
-- Shop refunding a customer who has an open dispute on that payment: use accept_claim on the dispute (refunds the disputed amount; add refund_amount for a partial refund). There are no offers: a refund just happens. The shop never closes a case: after a refund or replacement it waits for the customer to confirm and close it. Use refund_captured_payment only for payments with no dispute.
+- Shop acting for a customer named in words ("refund Rahul", "invoice Maria"): first call customer_payments. If several customers match, list them (name and email) and ask which one; never pick by name alone. If the customer has several payments and the user didn't say which, list them (date, items, amount) and ask. For a refund without a dispute, if the user gave no reason, ask for one: it's sent to the customer as the refund note. Only then call the tool.
+- Shop refunding a customer who has an open dispute on that payment: first read the dispute (show_dispute_details). The customer's claim decides the amount: the disputed amount (e.g. one extra charger), not the whole payment; don't ask the user for a reason, the dispute has it. Then use accept_claim (refunds the disputed amount; add refund_amount only if the user asks for a different amount). After it runs, report the amount in the result's refund field, never the payment total. There are no offers: a refund just happens. The shop never closes a case: after a refund or replacement it waits for the customer to confirm and close it. Use refund_captured_payment only for payments with no dispute.
 - Overdue invoices are the shop's to sort out: send_invoice_reminder to nudge the customer, record_payment_for_invoice if they paid another way (cash, bank transfer), or cancel_sent_invoice.
 - On a customer's existing open dispute, when they want their money back or a replacement, use request_resolution (wants: refund or replacement) with a short polite message; not a plain message. The customer confirms before it's sent.
 - When a customer says they're satisfied with a case (got the refund, parcel arrived, happy with the replacement), offer to close it and use close_case once they agree. Tell them the shop's refund can take a few days to show.
@@ -233,6 +233,8 @@ def build_graph(deps: Deps, checkpointer=None):
                     decision = {"outcome": "invalid", "params": v.params, "errors": [problem]}
             if decision["outcome"] == "needs_confirmation":
                 question = v.confirmation + who_and_what(v.params.get("capture_id"))
+                if name == "accept_claim":
+                    question = claim_confirmation(v.params, user) or question
                 answer = interrupt({"question": question, "tool": name, "params": v.params, "large_amount": v.large_amount})
                 decision["approved"] = str(answer).strip().lower() in YES
             decisions[call["id"]] = decision
@@ -249,6 +251,26 @@ def build_graph(deps: Deps, checkpointer=None):
             return (f"payment {capture_id} has an open dispute ({open_case}): don't refund the payment directly; settle the "
                     "dispute with accept_claim (refunds the disputed amount, or refund_amount for part of it)")
         return None
+
+    def claim_confirmation(params: dict, user: User) -> str | None:
+        """accept_claim, in words: how much goes back, to whom, and for what, looked up from PayPal."""
+        from ..app.purchases import purchase_details
+
+        found = deps.executor.execute("show_dispute_details", {"dispute_id": params.get("dispute_id", "")}, caller=user)
+        if not found.ok:
+            return None
+        d = found.body
+        amount = (params.get("refund_amount") or d["dispute_amount"])
+        part = "part of the disputed amount" if params.get("refund_amount") else "the disputed amount"
+        buyer = (d.get("disputed_transactions") or [{}])[0].get("buyer") or {}
+        who = f"{buyer.get('name', 'the customer')}" + (f" ({buyer['email']})" if buyer.get("email") else "")
+        q = f"Refund {amount['value']} {amount['currency_code']} to {who} for dispute {d['dispute_id']} ({part})?"
+        p = purchase_details(d["disputed_transactions"][0]["seller_transaction_id"], deps.executor)
+        if p:
+            q += f"\n\nPayment: {', '.join(p['items']) or 'purchase'}, {p['amount']} USD on {p['date'][:10]}"
+        if params.get("note"):
+            q += f"\n\n“{params['note']}”"
+        return q
 
     def who_and_what(capture_id: str | None) -> str:
         """Who gets the money and for what, written by code for the confirmation, so the user checks the
@@ -497,6 +519,9 @@ def build_graph(deps: Deps, checkpointer=None):
                     user, name, params, "success" if result.ok else "failed", http_status=result.status_code,
                     result_summary=(result.error or f"{result.method} {result.path} -> {result.status_code}")[:300],
                     confirmed=decision["outcome"] == "needs_confirmation", request_id=result.request_id, **audit)
+                refunded = (body or {}).get("refund", {}).get("amount") if result.ok and isinstance(body, dict) else None
+                if refunded:  # say what was actually refunded (the request may not name an amount)
+                    action["label"] = f"Refund {refunded['value']} {refunded['currency_code']} (dispute {params.get('dispute_id', '')})"
                 actions.append(action | ({"outcome": "done"} if result.ok else {"outcome": "failed", "error": result.error}))
             seen += f"\ntool {name}: {content}"
             messages.append(ToolMessage(content=content, tool_call_id=cid, name=name))

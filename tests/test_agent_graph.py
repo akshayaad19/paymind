@@ -761,3 +761,18 @@ def test_escaped_line_breaks_become_real_ones(world):
     assert "\\n" not in reply.confirmation["question"] and "Hello,\n\nAny update?\nRahul" in reply.confirmation["question"]
     agent.answer("u_rahul", "s1", approve=True)
     assert mock.state.store.db.get("disputes", d["dispute_id"])["messages"][-1]["content"] == "Hello,\n\nAny update?\nRahul"
+
+
+def test_accept_claim_confirmation_and_receipt_show_the_real_amount(world):
+    """Priya's dispute is for $29.99 of a $59.98 payment: the confirmation and the receipt say 29.99,
+    written by code, whatever the model might claim."""
+    mock = world[0]
+    d = next(x for x in mock.state.store.db.all("disputes") if x["reason"] == "INCORRECT_AMOUNT")
+    llm = ScriptedLLM([AIMessage("", tool_calls=[call("accept_claim", {"dispute_id": d["dispute_id"]})]),
+                       AIMessage("Refunded.")])
+    agent = make_agent(world, llm, ["accept_claim", "list_disputes"])
+    q = agent.send("u_asha", "s1", f"refund priya on {d['dispute_id']}").confirmation["question"]
+    assert q.startswith(f"Refund 29.99 USD to Priya Nair (priya.nair@example.com) for dispute {d['dispute_id']} (the disputed amount)?")
+    assert "USB-C Charger × 2, 59.98 USD" in q
+    reply = agent.answer("u_asha", "s1", approve=True)
+    assert reply.receipt["summary"] == f"✅ Done: Refund 29.99 USD (dispute {d['dispute_id']})"
