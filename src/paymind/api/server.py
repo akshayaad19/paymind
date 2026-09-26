@@ -27,6 +27,7 @@ checked on the server for every call; the web page only decides what to show.
   POST /api/disputes/{id}/resolve   accountants: refund (full or partial) or send a replacement; the customer then closes the case
   POST /api/disputes/{id}/photos    attach a photo to a dispute (e.g. the broken item); GET …/photos/{photo_id}
   POST /api/disputes/{id}/close     customers: close their own case as resolved (the shop is told)
+  POST /api/disputes/{id}/request-photos | /review-photos   accountants: ask for photos before a replacement, then approve or reject them
   POST /api/disputes/{id}/tracking  accountants: record a shipment (carrier, tracking number, status) for the disputed payment
   GET  /api/whats-new           new messages / replies owed / no reply yet, on open disputes
   GET  /api/audit               the caller's own audit log
@@ -157,6 +158,15 @@ class ResolveIn(BaseModel):
     tracking_number: str | None = Field(default=None, max_length=60)
 
 
+class PhotosRequestIn(BaseModel):
+    note: str | None = Field(default=None, max_length=500)       # what the photo should show
+
+
+class PhotosReviewIn(BaseModel):
+    approved: bool
+    note: str | None = Field(default=None, max_length=500)       # why they were rejected
+
+
 class TrackingIn(BaseModel):
     carrier: str = Field(min_length=2, max_length=60)
     tracking_number: str = Field(min_length=3, max_length=60)
@@ -270,7 +280,9 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         disputes = filter_results(user, "list_disputes", call("list_disputes", {"page_size": 50}, user))["items"]
         counts = {u["dispute_id"]: u for u in dispute_updates(user, services.executor, services.appdb)}
         requests = services.appdb.refund_requests()
+        evidence = services.appdb.all_evidence()
         for d in disputes:  # same "new" rule as the assistant's check_updates tool
+            d["evidence"] = evidence.get(d["dispute_id"])
             d["unread"] = counts.get(d["dispute_id"], {}).get("unread", 0)
             d["refund_request"] = open_refund_request(d, requests)  # "Refund requested" until refunded or an offer is made
             d["message_count"] = counts.get(d["dispute_id"], {}).get("message_count", 0)
@@ -589,6 +601,7 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
 
     def conversation(dispute: dict) -> dict:
         dispute["refund_request"] = open_refund_request(dispute, services.appdb.refund_requests())
+        dispute["evidence"] = services.appdb.evidence(dispute["dispute_id"])
         tx = (dispute.get("disputed_transactions") or [{}])[0]
         names = {"BUYER": (tx.get("buyer") or {}).get("name", "Customer"), "SELLER": (tx.get("seller") or {}).get("name", "Shop")}
         messages = [{"from": m["posted_by"], "name": names.get(m["posted_by"], m["posted_by"]),
@@ -648,6 +661,9 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         path = folder / f"{uuid.uuid4().hex}{PHOTO_TYPES[mime]}"
         path.write_bytes(data)
         services.appdb.add_dispute_photo(dispute_id, user.user_id, str(path), mime)
+        evidence = services.appdb.evidence(dispute_id)
+        if user.is_customer and evidence and evidence["status"] in ("requested", "rejected"):
+            services.appdb.set_evidence(dispute_id, "submitted", evidence["note"])  # the shop reviews them next
         services.executor.execute("send_message_about_dispute_to_other_party",
                                   {"dispute_id": dispute_id, "message": "📎 I attached a photo to this case."}, caller=user)
         services.appdb.log_action(user, "attach_photo", {"dispute_id": dispute_id}, "success",
@@ -673,6 +689,45 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         dispute = own_dispute(user, dispute_id)
         mark_seen(services.appdb, user, dispute)
         return conversation(dispute)
+
+    def shop_message(user: User, dispute_id: str, text: str, tool_log: str, params: dict) -> None:
+        sent = services.executor.execute("send_message_about_dispute_to_other_party",
+                                         {"dispute_id": dispute_id, "message": text}, caller=user)
+        services.appdb.log_action(user, tool_log, {"dispute_id": dispute_id, **params}, "success" if sent.ok else "failed",
+                                  http_status=sent.status_code, result_summary=(sent.error or f"{tool_log} on {dispute_id}")[:300],
+                                  confirmed=True)
+        if not sent.ok:
+            raise HTTPException(502, "Couldn't send the message. Please try again.")
+
+    @app.post("/api/disputes/{dispute_id}/request-photos", tags=["disputes"])
+    def request_photos(dispute_id: str, body: PhotosRequestIn, user: User = Depends(require_role("accountant"))):
+        """Before a replacement: ask the customer to attach photos of the problem."""
+        dispute = own_dispute(user, dispute_id)
+        if dispute.get("status") == "RESOLVED":
+            raise HTTPException(409, "This dispute is resolved.")
+        what = (body.note or "").strip() or "a clear photo showing the problem"
+        shop_message(user, dispute_id, f"📷 To arrange your replacement, please attach {what} to this case (use the 📎 button).",
+                     "request_photos", {"note": what})
+        services.appdb.set_evidence(dispute_id, "requested", what)
+        return conversation(own_dispute(user, dispute_id))
+
+    @app.post("/api/disputes/{dispute_id}/review-photos", tags=["disputes"])
+    def review_photos(dispute_id: str, body: PhotosReviewIn, user: User = Depends(require_role("accountant"))):
+        """The shop checks the customer's photos: approve (a replacement can then be sent) or ask again."""
+        own_dispute(user, dispute_id)
+        evidence = services.appdb.evidence(dispute_id)
+        if not evidence or evidence["status"] != "submitted":
+            raise HTTPException(409, "There are no new photos to review.")
+        if body.approved:
+            shop_message(user, dispute_id, "✅ Thanks for the photos, they confirm the problem. We'll send you a free replacement "
+                         "and share the tracking ID here.", "approve_photos", {})
+            services.appdb.set_evidence(dispute_id, "approved")
+        else:
+            why = (body.note or "").strip() or "the photo doesn't show the problem clearly"
+            shop_message(user, dispute_id, f"❌ Sorry, we couldn't confirm the problem from the photo: {why}. Please attach "
+                         "another one (📎).", "reject_photos", {"note": why})
+            services.appdb.set_evidence(dispute_id, "rejected", why)
+        return conversation(own_dispute(user, dispute_id))
 
     @app.post("/api/disputes/{dispute_id}/tracking", tags=["disputes"])
     def add_tracking(dispute_id: str, body: TrackingIn, user: User = Depends(require_role("accountant"))):
@@ -716,10 +771,14 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
             raise HTTPException(409, "You've already acted on this case; it's waiting for the customer to confirm.")
         note = (body.note or "").strip() or None
         if body.action == "replacement":
+            evidence = services.appdb.evidence(dispute_id)
+            if not evidence or evidence["status"] != "approved":
+                raise HTTPException(409, "Before a replacement: ask the customer for photos (📷) and approve them.")
             carrier, tracking = (body.carrier or "").strip(), (body.tracking_number or "").strip()
             if len(carrier) < 2 or len(tracking) < 3:
                 raise HTTPException(422, "Add the carrier and tracking number for the replacement.")
-            text = f"We're sending you a replacement via {carrier}, tracking number {tracking}." + (f" {note}" if note else "")
+            text = (f"We're sending you a free replacement via {carrier}. Your tracking ID is {tracking}: please check it "
+                    "for delivery updates, and mark this case resolved once it arrives." + (f" {note}" if note else ""))
             sent = services.executor.execute("send_message_about_dispute_to_other_party",
                                              {"dispute_id": dispute_id, "message": text}, caller=user)
             r = services.executor.client.post(f"{services.executor.base_url}/mock/disputes/{dispute_id}/replacement",

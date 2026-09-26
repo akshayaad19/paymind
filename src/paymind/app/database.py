@@ -26,6 +26,9 @@ Tables:
              shop's turn.
   dispute_photos  photos a customer attached to a dispute (e.g. the broken item);
              files live in data/app/uploads/ (git-ignored).
+  dispute_evidence  the shop asked for photos before replacing an item: requested →
+             submitted (customer attached) → approved / rejected (shop checked).
+             A replacement can only be sent once the photos are approved.
 
 Files (same pattern as the mock):
   data/app/initial.db  starting data: demo users (committed)
@@ -125,6 +128,13 @@ CREATE TABLE IF NOT EXISTS refund_requests (  -- a customer asked the shop for a
     message       TEXT NOT NULL,             -- what was sent to the shop with the request
     requested_at  TEXT NOT NULL,
     wants         TEXT NOT NULL DEFAULT 'refund' CHECK (wants IN ('refund', 'replacement'))
+);
+
+CREATE TABLE IF NOT EXISTS dispute_evidence (  -- photos the shop asked for before a replacement
+    dispute_id   TEXT PRIMARY KEY,
+    status       TEXT NOT NULL CHECK (status IN ('requested', 'submitted', 'approved', 'rejected')),
+    note         TEXT,                      -- what the shop asked for, or why photos were rejected
+    updated_at   TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS dispute_photos (  -- evidence a customer attached to a dispute
@@ -345,6 +355,22 @@ class AppDatabase:
         rows = self.conn.execute("SELECT * FROM refund_requests").fetchall()
         return {r["dispute_id"]: {"amount": {"currency_code": r["currency_code"], "value": r["amount"]}, "wants": r["wants"],
                                   "message": r["message"], "time": r["requested_at"], "user_id": r["user_id"]} for r in rows}
+
+    # ---- evidence: photos the shop asked for ------------------------------------------
+
+    def set_evidence(self, dispute_id: str, status: str, note: str | None = None) -> dict:
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO dispute_evidence (dispute_id, status, note, updated_at) VALUES (?, ?, ?, ?)",
+                              (dispute_id, status, note, now_iso()))
+        return self.evidence(dispute_id)
+
+    def evidence(self, dispute_id: str) -> dict | None:
+        row = self.conn.execute("SELECT status, note, updated_at FROM dispute_evidence WHERE dispute_id = ?", (dispute_id,)).fetchone()
+        return dict(row) if row else None
+
+    def all_evidence(self) -> dict[str, dict]:
+        return {r["dispute_id"]: {"status": r["status"], "note": r["note"], "updated_at": r["updated_at"]}
+                for r in self.conn.execute("SELECT * FROM dispute_evidence")}
 
     # ---- dispute photos -------------------------------------------------------------
 

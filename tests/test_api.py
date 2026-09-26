@@ -683,6 +683,7 @@ def test_shop_sends_a_replacement_customer_closes(setup):
     client, _, _ = setup
     rahul, asha = login(client, "rahul"), login(client, "asha")
     dispute_id = rahuls_dispute(client, rahul)
+    approve_photos(client, dispute_id, asha, rahul)
     missing = client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha, json={"action": "replacement", "carrier": "Blue Dart"})
     assert missing.status_code == 422
     r = client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha,
@@ -772,3 +773,40 @@ def test_accountant_cancels_an_invoice(setup):
     client, _, services = setup
     inv = rahuls_overdue_invoice(services)
     assert client.post(f"/api/invoices/{inv}/cancel", headers=login(client, "asha")).json()["status"] == "CANCELLED"
+
+
+
+# ---- free replacement: photos first ------------------------------------------------------------
+
+def approve_photos(client, dispute_id, asha, rahul):
+    client.post(f"/api/disputes/{dispute_id}/request-photos", headers=asha, json={"note": "the left earbud"})
+    client.post(f"/api/disputes/{dispute_id}/photos", headers=rahul, files={"file": ("bud.png", PHOTO, "image/png")})
+    return client.post(f"/api/disputes/{dispute_id}/review-photos", headers=asha, json={"approved": True}).json()
+
+
+def test_replacement_needs_approved_photos(setup):
+    client, _, _ = setup
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    dispute_id = rahuls_dispute(client, rahul)
+    body = {"action": "replacement", "carrier": "Blue Dart", "tracking_number": "BD123456789IN"}
+    assert client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha, json=body).status_code == 409   # no photos yet
+
+    asked = client.post(f"/api/disputes/{dispute_id}/request-photos", headers=asha, json={"note": "the left earbud"}).json()
+    assert asked["dispute"]["evidence"]["status"] == "requested" and "the left earbud" in asked["messages"][-1]["text"]
+    assert ("photo_needed", dispute_id) in whats_new_kinds(client, rahul)
+    assert client.post(f"/api/disputes/{dispute_id}/review-photos", headers=asha, json={"approved": True}).status_code == 409
+
+    client.post(f"/api/disputes/{dispute_id}/photos", headers=rahul, files={"file": ("bud.png", PHOTO, "image/png")})
+    assert ("photos_to_review", dispute_id) in whats_new_kinds(client, asha)
+    rejected = client.post(f"/api/disputes/{dispute_id}/review-photos", headers=asha,
+                           json={"approved": False, "note": "the earbud isn't visible"}).json()
+    assert rejected["dispute"]["evidence"]["status"] == "rejected" and "isn't visible" in rejected["messages"][-1]["text"]
+    assert client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha, json=body).status_code == 409   # still not approved
+
+    client.post(f"/api/disputes/{dispute_id}/photos", headers=rahul, files={"file": ("bud2.png", PHOTO, "image/png")})
+    approved = client.post(f"/api/disputes/{dispute_id}/review-photos", headers=asha, json={"approved": True}).json()
+    assert approved["dispute"]["evidence"]["status"] == "approved"
+    sent = client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha, json=body).json()
+    assert sent["dispute"]["status"] == "WAITING_FOR_BUYER_RESPONSE" and "free replacement" in sent["messages"][-1]["text"]
+    assert "BD123456789IN" in sent["messages"][-1]["text"] and "check it" in sent["messages"][-1]["text"]
+    assert client.post(f"/api/disputes/{dispute_id}/request-photos", headers=rahul, json={}).status_code == 403  # shop only

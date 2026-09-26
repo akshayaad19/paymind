@@ -298,6 +298,13 @@ const DISPUTE_REASONS = {
 function disputeReason(d) { return DISPUTE_REASONS[d.reason] || String(d.reason || "").replaceAll("_", " ").toLowerCase(); }
 function disputeStatus(d) {
   const shop = state.user.role === "accountant";
+  const ev = d.evidence?.status;
+  if (ev && d.status !== "RESOLVED") {
+    const label = shop
+      ? { requested: ["Waiting for photos", "waiting"], rejected: ["Waiting for photos", "waiting"], submitted: ["Check photos", "error"], approved: ["Send replacement", "error"] }[ev]
+      : { requested: ["Photo needed", "error"], rejected: ["Photo needed", "error"], submitted: ["Photos under review", "waiting"], approved: ["Replacement being arranged", "waiting"] }[ev];
+    if (label) return { text: label[0], kind: label[1] };
+  }
   if (d.refund_request) {
     const what = d.refund_request.wants === "replacement" ? "Replacement" : "Refund";
     return shop ? { text: `${what} requested by customer`, kind: "error" } : { text: `${what} requested`, kind: "waiting" };
@@ -557,6 +564,8 @@ function whatsNewItem(i) {
     : `refunded you ${money(act.amount)}`;
   const texts = {
     action_needed: [`🔴 Action needed · ${esc(i.with)}${due}`, "Open", "open"],
+    photo_needed: [`📷 ${esc(i.with)} ${i.rejected ? "needs another photo" : "asked for a photo"} to arrange your replacement${i.text ? `: ${esc(i.text)}` : ""}`, "Add photo", "open"],
+    photos_to_review: [`📷 ${esc(i.with)} sent photos · check them to arrange the replacement`, "Review", "open"],
     confirm_resolution: [`✅ ${esc(i.with)} ${shopDid} · ${timeAgo(i.time)}. If you're happy, mark the case resolved; if not, reply in the case.`, "Open", "open"],
     new_message: [`📬 New message from ${esc(i.with)} · ${timeAgo(i.time)}${due}`, "Open", "open"],
     case_closed: [`✅ ${esc(i.with)} closed their case · ${esc(i.outcome)}${i.amount_refunded ? ` (${money(i.amount_refunded)})` : ""} · ${timeAgo(i.time)}`, "View", "open"],
@@ -1042,6 +1051,13 @@ let threadState = null;  // the open dispute (for the resolve box)
 function resolveChoice() { return document.querySelector('input[name="resolve"]:checked').value; }
 
 function updateResolveBox() {
+  const approved = threadState?.dispute?.evidence?.status === "approved";
+  const rep = document.querySelector('input[name="resolve"][value="replacement"]');
+  rep.disabled = !approved;
+  rep.closest("label").querySelector("small").textContent = approved
+    ? "Free: ship a new one; the customer gets the tracking ID"
+    : "Ask for photos first (📷 in the case) and approve them";
+  if (!approved && rep.checked) document.querySelector('input[name="resolve"][value="refund"]').checked = true;
   const choice = resolveChoice(), amount = threadState?.dispute?.dispute_amount;
   $$(".resolve-fields [data-for]").forEach((el) => { el.hidden = el.dataset.for !== choice; });
   const partial = choice === "refund" && $("#resolve-amount").value.trim();
@@ -1119,9 +1135,10 @@ function renderThread(res) {
     : `refunded <b>${money(sa.amount)}</b>`) : "";
   const offerHint = sa ? `<div class="refund-request">${sa.type === "replacement" ? "🔁" : "💸"} ${shopView ? "You" : "The shop"} ${did} · ${shortDate(sa.time)}.
     ${shopView ? "Waiting for the customer to confirm and close the case." : "If you're happy, click <b>✅ Mark as resolved</b>; if not, reply here."}</div>` : "";
+  const evidenceBox = evidenceBanner(d, shopView, res.can_reply);
   const photos = (res.photos || []).length ? `<div class="photo-strip">${res.photos.map((ph) =>
     `<a class="photo" data-photo="${esc(ph.photo_id)}" title="${ph.by === mine ? "You" : "They"} · ${shortDate(ph.time)}"><span class="muted small">Loading…</span></a>`).join("")}</div>` : "";
-  $("#thread").innerHTML = purchaseBox(res.purchase, shopView && res.can_reply) + requestLine + offerHint + outcome + photos + res.messages.map((m) => `
+  $("#thread").innerHTML = purchaseBox(res.purchase, shopView && res.can_reply) + requestLine + offerHint + outcome + evidenceBox + photos + res.messages.map((m) => `
     <div class="tmsg ${m.from === mine ? "mine" : ""}">
       <div class="who">${esc(m.from === mine ? "You" : m.name)} · ${shortDate(m.time)}</div>
       <div class="text">${esc(m.text.replace(/\\r?\\n/g, "\n"))}</div>
@@ -1158,6 +1175,42 @@ function purchaseBox(p, canTrack) {
     <div><b>${items}</b> · ${money({ value: p.amount })}${refunded}</div>
     <div class="muted small">${PAID_HOW[p.paid_how] || esc(p.paid_how)} · paid ${shortDate(p.date)} · payment <span class="mono">${esc(p.payment_id)}</span></div>
     <div class="ship-line">${shipLine}</div>${form}</div>`;
+}
+
+// Free replacements need photos first: the shop asks, the customer attaches (📎), the shop approves or asks again.
+function evidenceBanner(d, shopView, open) {
+  if (!open || d.seller_action) return "";
+  const ev = d.evidence, name = esc(buyerOf(d).name || "The customer");
+  if (!ev) {
+    return shopView ? `<details class="track-form refund-request"><summary>📷 Ask for photos before a replacement</summary>
+      <div class="track-fields"><input id="photos-note" placeholder="What should the photo show? e.g. the left earbud and its serial number">
+      <button class="btn btn-primary btn-sm" type="button" id="photos-ask">Ask</button></div></details>` : "";
+  }
+  const note = ev.note ? `: ${esc(ev.note)}` : "";
+  if (ev.status === "requested" || ev.status === "rejected") {
+    const again = ev.status === "rejected" ? "needs another photo" : "asked for";
+    return shopView ? `<div class="refund-request">📷 Waiting for ${name}'s photos${note}</div>`
+      : `<div class="refund-request">📷 The shop ${again}${note}. Attach it with the <b>📎</b> button below.</div>`;
+  }
+  if (ev.status === "submitted") {
+    return shopView ? `<div class="refund-request">📷 ${name} sent photos (below). Do they confirm the problem?
+      <div class="track-fields"><button class="btn btn-primary btn-sm" type="button" id="photos-approve">✅ Yes, approve</button>
+      <input id="photos-reject-note" placeholder="If not, what's missing?"><button class="btn btn-ghost btn-sm" type="button" id="photos-reject">❌ Ask for another</button></div></div>`
+      : `<div class="refund-request">📷 Photos sent. The shop is checking them.</div>`;
+  }
+  return shopView ? `<div class="refund-request">✅ Photos approved. Send the free replacement from <b>Resolve…</b> with the tracking ID.</div>`
+    : `<div class="refund-request">✅ The shop approved your photos. Your free replacement is being arranged; you'll get a tracking ID here.</div>`;
+}
+
+async function evidenceAction(kind) {
+  const url = `/api/disputes/${encodeURIComponent(openDisputeId)}/${kind === "ask" ? "request-photos" : "review-photos"}`;
+  const body = kind === "ask" ? { note: $("#photos-note")?.value.trim() || null }
+    : { approved: kind === "approve", note: $("#photos-reject-note")?.value.trim() || null };
+  try {
+    renderThread(await api(url, { method: "POST", body: JSON.stringify(body) }));
+    toast({ ask: "Asked the customer for photos.", approve: "Photos approved. You can now send the replacement.", reject: "Asked the customer for another photo." }[kind]);
+    loadData(); loadWhatsNew();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
 }
 
 async function closeCase() {
@@ -1323,7 +1376,12 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#po-drawer").addEventListener("input", (e) => { if (e.target.closest("#po-items")) updateTotal(); });
   $("#drawer-close").addEventListener("click", closeDispute);
   $("#thread-photo").addEventListener("change", (e) => { attachPhoto(e.target.files[0]); e.target.value = ""; });
-  $("#thread").addEventListener("click", (e) => { if (e.target.id === "track-save") saveTracking(); });
+  $("#thread").addEventListener("click", (e) => {
+    if (e.target.id === "track-save") saveTracking();
+    if (e.target.id === "photos-ask") evidenceAction("ask");
+    if (e.target.id === "photos-approve") evidenceAction("approve");
+    if (e.target.id === "photos-reject") evidenceAction("reject");
+  });
   $("#resolve-open").addEventListener("click", openResolve);
   $("#case-close").addEventListener("click", closeCase);
   $("#resolve-cancel").addEventListener("click", closeResolve);

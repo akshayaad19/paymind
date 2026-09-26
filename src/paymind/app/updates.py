@@ -86,6 +86,8 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
                     shown until the shop opens it
       refunded      (customer) the shop refunded one of their payments in the last CLOSED_DAYS days
       confirm_resolution  (customer) the shop refunded or sent a replacement; the customer closes the case when happy
+      photo_needed  (customer) the shop asked for photos (or asked again) before a replacement
+      photos_to_review  (shop) the customer attached the photos the shop asked for
       refund_requested  (shop) the customer asked for a refund or a replacement; stays until the shop does it
       new_message   the other side wrote and the user hasn't seen it
       needs_reply   the other side wrote, the user has seen it, but hasn't answered
@@ -111,6 +113,7 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
     reads = appdb.dispute_reads(user.user_id)
     read_at = appdb.dispute_read_times(user.user_id)
     requests = appdb.refund_requests()
+    evidence = appdb.all_evidence()
     items = []
     for row in filter_results(user, "list_disputes", listed.body)["items"]:
         if row.get("status") == "RESOLVED":
@@ -139,6 +142,13 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
             base["due_date"] = due
             base["days_left"] = (_parse(due) - now).days if due else None
         request = open_refund_request(dispute, requests)
+        ev = evidence.get(dispute["dispute_id"])
+        if ev and user.is_customer and ev["status"] in ("requested", "rejected"):
+            items.append({**base, "kind": "photo_needed", "time": ev["updated_at"], "text": ev["note"] or "", "rejected": ev["status"] == "rejected"})
+            continue
+        if ev and not user.is_customer and ev["status"] == "submitted":
+            items.append({**base, "kind": "photos_to_review", "time": ev["updated_at"], "text": ""})
+            continue
         if user.is_customer and dispute.get("seller_action") and dispute.get("status") == "WAITING_FOR_BUYER_RESPONSE":
             # the shop refunded or sent a replacement: only the customer can close the case
             items.append({**base, "kind": "confirm_resolution", "time": dispute["seller_action"].get("time", base["time"])})
@@ -162,7 +172,7 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
     items += invoice_updates(user, executor, now)
     if user.is_customer:
         items += refund_updates(user, executor, now)
-    order = {"confirm_resolution": 0, "case_closed": 0, "refunded": 1, "invoice_overdue": 1, "invoice_due": 2, "refund_requested": 0, "new_message": 0, "action_needed": 1, "po_not_received": 1, "po_confirm": 1, "po_ship": 1, "new_po": 1,
+    order = {"photo_needed": 0, "photos_to_review": 0, "confirm_resolution": 0, "case_closed": 0, "refunded": 1, "invoice_overdue": 1, "invoice_due": 2, "refund_requested": 0, "new_message": 0, "action_needed": 1, "po_not_received": 1, "po_confirm": 1, "po_ship": 1, "new_po": 1,
              "po_pay": 2, "po_send_invoice": 2, "needs_reply": 2, "po_shipped": 3, "po_accepted": 3, "po_rejected": 3, "no_reply_yet": 4}
     # overdue / closest deadline first, then by kind, then oldest first
     return sorted(items, key=lambda i: (i.get("days_left") is None, i.get("days_left") or 0, order[i["kind"]], i["time"]))
