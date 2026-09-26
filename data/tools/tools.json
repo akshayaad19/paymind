@@ -8270,9 +8270,7 @@
       "File an appeal for case DP-7391 with new proof",
       "We lost dispute 5503, how do we appeal that?"
     ],
-    "allowed_roles": [
-      "accountant"
-    ],
+    "allowed_roles": [],
     "enrichment_status": "ok",
     "requires_confirmation": true,
     "eval_only": false,
@@ -8282,7 +8280,9 @@
     "example_call": {
       "dispute_id": "PP-D-27803"
     },
-    "call_example_status": "ok"
+    "call_example_status": "ok",
+    "disabled": true,
+    "disabled_reason": "PayMind is the seller's portal: disputes are settled between the shop and the customer, without PayPal review."
   },
   {
     "name": "settle_dispute",
@@ -8320,9 +8320,7 @@
       "Force a settlement outcome for test case 9910",
       "Resolve sandbox case 38192 as a seller win"
     ],
-    "allowed_roles": [
-      "accountant"
-    ],
+    "allowed_roles": [],
     "enrichment_status": "ok",
     "requires_confirmation": true,
     "eval_only": false,
@@ -8333,7 +8331,9 @@
       "dispute_id": "PP-D-27803",
       "adjudication_outcome": "BUYER_FAVOR"
     },
-    "call_example_status": "ok"
+    "call_example_status": "ok",
+    "disabled": true,
+    "disabled_reason": "PayMind is the seller's portal: disputes are settled between the shop and the customer, without PayPal review."
   },
   {
     "name": "update_dispute_status",
@@ -8371,9 +8371,7 @@
       "Set dispute 8820 to wait for seller documents in the sandbox",
       "Change the mock case 4022 status so I can test uploading files"
     ],
-    "allowed_roles": [
-      "accountant"
-    ],
+    "allowed_roles": [],
     "enrichment_status": "ok",
     "requires_confirmation": true,
     "eval_only": false,
@@ -8384,7 +8382,9 @@
       "dispute_id": "PP-D-27803",
       "action": "BUYER_EVIDENCE"
     },
-    "call_example_status": "ok"
+    "call_example_status": "ok",
+    "disabled": true,
+    "disabled_reason": "PayMind is the seller's portal: disputes are settled between the shop and the customer, without PayPal review."
   },
   {
     "name": "make_offer_to_resolve_dispute",
@@ -8502,10 +8502,7 @@
       "Add a note and proof of refund to customer dispute DP-773",
       "Here is my documentation to support case 9921"
     ],
-    "allowed_roles": [
-      "customer",
-      "accountant"
-    ],
+    "allowed_roles": [],
     "enrichment_status": "ok",
     "requires_confirmation": true,
     "eval_only": false,
@@ -8516,7 +8513,9 @@
       "dispute_id": "PP-D-27803",
       "input": "Tracking info provided"
     },
-    "call_example_status": "ok"
+    "call_example_status": "ok",
+    "disabled": true,
+    "disabled_reason": "PayMind is the seller's portal: disputes are settled between the shop and the customer, without PayPal review."
   },
   {
     "name": "acknowledge_returned_item",
@@ -8605,10 +8604,7 @@
       "I have more files to defend my side of dispute 90123 during pre-arbitration",
       "Upload supporting notes for the chargeback on case 77201"
     ],
-    "allowed_roles": [
-      "customer",
-      "accountant"
-    ],
+    "allowed_roles": [],
     "enrichment_status": "ok",
     "requires_confirmation": true,
     "eval_only": false,
@@ -8618,7 +8614,9 @@
     "example_call": {
       "dispute_id": "PP-D-27803"
     },
-    "call_example_status": "ok"
+    "call_example_status": "ok",
+    "disabled": true,
+    "disabled_reason": "PayMind is the seller's portal: disputes are settled between the shop and the customer, without PayPal review."
   },
   {
     "name": "escalate_dispute_to_claim",
@@ -8656,10 +8654,7 @@
       "Turn this inquiry 88201 into a formal claim",
       "Ask PayPal to step in and decide on case 3310"
     ],
-    "allowed_roles": [
-      "customer",
-      "accountant"
-    ],
+    "allowed_roles": [],
     "enrichment_status": "ok",
     "requires_confirmation": true,
     "eval_only": false,
@@ -8670,7 +8665,9 @@
       "dispute_id": "PP-D-27803",
       "note": "Escalating to PayPal claim for resolution."
     },
-    "call_example_status": "ok"
+    "call_example_status": "ok",
+    "disabled": true,
+    "disabled_reason": "PayMind is the seller's portal: disputes are settled between the shop and the customer, without PayPal review."
   },
   {
     "name": "accept_offer_to_resolve_dispute",

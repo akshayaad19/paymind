@@ -47,7 +47,7 @@ def test_initial_database_contents():
     conn = sqlite3.connect(INITIAL_DB)
     counts = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
               for t in ("customers", "captures", "refunds", "orders", "invoices", "disputes", "transactions")}
-    assert counts == {"customers": 6, "captures": 47, "refunds": 4, "orders": 2, "invoices": 8, "disputes": 4, "transactions": 51}
+    assert counts == {"customers": 6, "captures": 52, "refunds": 4, "orders": 2, "invoices": 8, "disputes": 4, "transactions": 56}
 
 
 def test_initial_data_is_consistent():
@@ -90,9 +90,9 @@ def test_example_replay(client):
 
 def test_open_dispute_from_user_123(client):
     items = client.get("/v1/customer/disputes", params={"dispute_state": "REQUIRED_ACTION"}).json()["items"]
-    buyers = [d["disputed_transactions"][0]["buyer"]["payer_id"] for d in items]
-    assert buyers == ["user_123"]
-    assert items[0]["dispute_amount"] == usd("40.00")
+    rahul = next(d for d in items if d["disputed_transactions"][0]["buyer"]["payer_id"] == "user_123")
+    assert rahul["dispute_amount"] == usd("79.99")
+    assert all(d["dispute_state"] == "REQUIRED_ACTION" for d in items)
 
 
 def test_sales_last_month(client):
@@ -194,7 +194,7 @@ def test_accept_claim_refunds_buyer(client):
     assert r.json()["status"] == "RESOLVED"
     dispute = client.get(f"/v1/customer/disputes/{dispute_id}").json()
     assert dispute["dispute_outcome"]["outcome_code"] == "RESOLVED_BUYER_FAVOUR"
-    assert client.get(f"/v2/payments/refunds/{dispute['refund_id']}").json()["amount"] == usd("40.00")
+    assert client.get(f"/v2/payments/refunds/{dispute['refund_id']}").json()["amount"] == usd("79.99")
     again = client.post(f"/v1/customer/disputes/{dispute_id}/accept-claim", json={})
     assert again.status_code == 422 and issue(again) == "DISPUTE_ALREADY_RESOLVED"
 
@@ -343,3 +343,34 @@ def test_buyer_pays_a_sent_invoice(app, client):
     assert again.status_code == 422 and again.json()["details"][0]["issue"] == "CANNOT_PAY_INVOICE"
     draft = next(i for i in app.state.store.db.all("invoices") if i["status"] == "DRAFT")
     assert client.post(f"/mock/invoices/{draft['id']}/pay").status_code == 422
+
+
+def test_full_refund_of_a_disputed_payment_closes_the_dispute(tmp_path):
+    """Refunding the payment directly (not through the dispute) still resolves the dispute, like PayPal."""
+    from decimal import Decimal
+    from paymind.mock_paypal.app import create_app as make
+
+    app = make(db_path=tmp_path / "m.db", slow_seconds=0)
+    store = app.state.store
+    dispute = next(d for d in store.db.all("disputes") if d["status"] == "WAITING_FOR_SELLER_RESPONSE")
+    capture = store.db.get("captures", dispute["disputed_transactions"][0]["seller_transaction_id"])
+    store.create_refund(capture, Decimal("1.00"), "partial")
+    assert store.db.get("disputes", dispute["dispute_id"])["status"] != "RESOLVED"  # partial: still open
+    capture = store.db.get("captures", capture["id"])
+    rest = Decimal(capture["amount"]["value"]) - Decimal(capture["refunded_amount"]["value"])
+    store.create_refund(capture, rest, "the rest")
+    closed = store.db.get("disputes", dispute["dispute_id"])
+    assert closed["status"] == "RESOLVED" and closed["dispute_outcome"]["outcome_code"] == "RESOLVED_BUYER_FAVOUR"
+
+
+def test_sales_say_how_they_were_paid(tmp_path):
+    """Invoice payments carry invoice_id, till payments carry store_info (like PayPal), the rest are online."""
+    from paymind.mock_paypal.app import create_app as make
+
+    db = make(db_path=tmp_path / "m.db", slow_seconds=0).state.store.db
+    sales = [r for r in db.transactions() if r["transaction_info"]["transaction_event_code"] == "T0006"]
+    in_store = [r for r in sales if r.get("store_info")]
+    assert in_store and all(r["store_info"]["store_id"] == "CHENNAI-01" for r in in_store)
+    assert not any(r.get("store_info") and r["transaction_info"].get("invoice_id") for r in sales)
+    disputed = {d["disputed_transactions"][0]["seller_transaction_id"] for d in db.all("disputes")}
+    assert not any(r["transaction_info"]["transaction_id"] in disputed for r in in_store)

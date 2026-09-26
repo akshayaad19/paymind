@@ -41,26 +41,47 @@ def qdrant_search(registry: ToolRegistry):
     return search
 
 
-class ModelChain:
-    """Try models in order. A model whose DAILY quota is used up is skipped until the next day,
-    so calls don't waste time on models that can't answer today."""
+def gemini_timeout() -> float:
+    """Seconds to wait for one model before moving on to the next. Without a limit, a model that
+    stops answering makes the request hang forever."""
+    return float(os.getenv("GEMINI_TIMEOUT", "45"))
 
-    def __init__(self, bound: list[tuple[str, object]], exhausted: dict[str, str]):
-        self.bound, self.exhausted = bound, exhausted
+
+COOLDOWN_SECONDS = 300  # a model that timed out or was overloaded is skipped for this long
+
+
+class ModelChain:
+    """Try models in order, skipping ones that can't answer right now:
+      - daily quota used up → skipped until the next day
+      - timed out or overloaded (503) → skipped for 5 minutes, then tried again
+    so calls don't keep waiting on a model that's down. If every model is being skipped,
+    they're all tried anyway rather than failing without asking."""
+
+    def __init__(self, bound: list[tuple[str, object]], exhausted: dict[str, str], clock=None):
+        import time
+
+        self.bound, self.exhausted = bound, exhausted  # exhausted: model → day, or "until:<epoch seconds>"
+        self.clock = clock or time.time
+
+    def _skipped(self, model: str, today: str) -> bool:
+        mark = self.exhausted.get(model, "")
+        return mark == today or (mark.startswith("until:") and float(mark[6:]) > self.clock())
 
     def invoke(self, messages):
         from datetime import date
 
         today, last_error = date.today().isoformat(), None
-        for model, llm in self.bound:
-            if self.exhausted.get(model) == today:
-                continue
+        available = [(m, llm) for m, llm in self.bound if not self._skipped(m, today)]
+        for model, llm in available or [(m, llm) for m, llm in self.bound if self.exhausted.get(m) != today]:
             try:
                 return llm.invoke(messages)
-            except Exception as exc:  # busy, rate-limited, out of quota: try the next model
+            except Exception as exc:  # busy, rate-limited, timed out, out of quota: try the next model
                 last_error = exc
-                if "PerDay" in str(exc):
+                text = f"{type(exc).__name__} {exc}"
+                if "PerDay" in text:
                     self.exhausted[model] = today
+                elif any(s in text for s in ("503", "UNAVAILABLE", "Timeout", "timed out", "DeadlineExceeded")):
+                    self.exhausted[model] = f"until:{self.clock() + COOLDOWN_SECONDS}"
         raise last_error or RuntimeError("every model is out of daily quota")
 
 
@@ -84,7 +105,7 @@ def gemini_llm_factory(models: list[str]):
     """Bind tools per call; if a model fails (overloaded, out of quota), try the next."""
     from langchain_google_genai import ChatGoogleGenerativeAI
 
-    clients = [(m, ChatGoogleGenerativeAI(model=m, max_retries=0)) for m in models]
+    clients = [(m, ChatGoogleGenerativeAI(model=m, max_retries=0, timeout=gemini_timeout())) for m in models]
     exhausted: dict[str, str] = {}  # model -> day its daily quota ran out (shared by every call)
 
     def llm_for(schemas: list[dict]):

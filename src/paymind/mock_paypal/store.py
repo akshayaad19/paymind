@@ -135,7 +135,21 @@ class Store:
         self.db.put("captures", capture)
         payer = self.customer((capture.get("payer") or {}).get("payer_id", ""))
         self.record_transaction(refund["id"], "T1107", -amount, when, payer, capture.get("invoice_id"))
+        if capture["status"] == "REFUNDED":
+            self.close_disputes_on(capture["id"], refund["id"], when)
         return refund
+
+    def close_disputes_on(self, capture_id: str, refund_id: str, when) -> None:
+        """A payment refunded in full leaves nothing to dispute: like PayPal, its open disputes close
+        in the buyer's favour (whichever way the refund was made)."""
+        for dispute in self.db.all("disputes"):
+            tx = (dispute.get("disputed_transactions") or [{}])[0]
+            if tx.get("seller_transaction_id") != capture_id or dispute.get("status") == "RESOLVED":
+                continue
+            dispute.update(status="RESOLVED", dispute_state="RESOLVED", refund_id=refund_id, update_time=iso(when),
+                           dispute_outcome={"outcome_code": "RESOLVED_BUYER_FAVOUR", "amount_refunded": dispute["dispute_amount"]})
+            dispute.pop("offer", None)
+            self.db.put("disputes", dispute)
 
     def balance(self) -> Decimal:
         total = Decimal(self.db.meta("starting_balance", "0"))

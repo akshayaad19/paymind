@@ -4,9 +4,12 @@ Every /api route except login needs a valid JWT (see auth.py). Roles are
 checked on the server for every call; the web page only decides what to show.
 
   POST /api/auth/login          email + password → token
+  POST /api/auth/logout         end the session: this token and every older one stop working
   GET  /api/me                  who am I
   POST /api/chat                send a message to the agent
   POST /api/chat/confirm        answer a pending yes/no
+  POST /api/chat/stream, /api/chat/confirm/stream   the same, streamed (Server-Sent Events): the answer's
+                                words as Gemini writes them, then a final "done" event with the full result
   GET  /api/paypal/overview     account data: everything for accountants, own records for customers
   GET  /api/paypal/transactions accountant only: transactions for a day / week / month, with totals
   GET  /api/invoices/{id}/pdf   download an invoice as PDF (own invoices only for customers)
@@ -20,6 +23,7 @@ checked on the server for every call; the web page only decides what to show.
   POST /api/pos/{id}/delivered | /not-received   customers confirm delivery or report it missing
   GET  /api/disputes/{id}       a dispute and its message thread (own disputes only for customers)
   POST /api/disputes/{id}/messages  send a message to the other side of the dispute
+  POST /api/disputes/{id}/resolve   accountants: refund in full, or offer a partial refund
   GET  /api/whats-new           new messages / replies owed / no reply yet, on open disputes
   GET  /api/audit               the caller's own audit log
 
@@ -30,6 +34,7 @@ Run (mock PayPal must be running on port 8000):
 
 from __future__ import annotations
 
+import json
 import re
 import threading
 import uuid
@@ -40,14 +45,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from ..agent.executor import Executor, ToolRegistry
 from ..agent.scope import check_access, filter_results
 from ..app.database import AppDatabase, User
-from ..app.updates import dispute_updates, mark_seen, sync_po_payment, whats_new
+from ..app.updates import dispute_updates, mark_seen, open_refund_request, sync_po_payment, whats_new
 from .auth import TOKEN_TTL, create_token, current_user, require_role, secret_key
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -140,6 +145,12 @@ class POReject(BaseModel):
     reason: str = Field(min_length=3, max_length=500)
 
 
+class ResolveIn(BaseModel):
+    action: str = Field(pattern="^(refund|offer)$")
+    amount: str | None = None                                  # offer: the partial refund offered
+    note: str | None = Field(default=None, max_length=1000)
+
+
 class ConfirmIn(BaseModel):
     session_id: str
     approve: bool
@@ -169,8 +180,14 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         user = services.appdb.authenticate(body.email, body.password)
         if user is None:
             raise HTTPException(401, "Wrong email or password.")
-        return {"access_token": create_token(user, app.state.jwt_secret), "token_type": "bearer",
+        _, version = services.appdb.user_for_token(user.user_id)
+        return {"access_token": create_token(user, app.state.jwt_secret, version=version), "token_type": "bearer",
                 "expires_in": int(TOKEN_TTL.total_seconds()), "user": public(user)}
+
+    @app.post("/api/auth/logout", tags=["auth"])
+    def logout(user: User = Depends(current_user)):
+        services.appdb.revoke_tokens(user.user_id)
+        return {"ok": True}
 
     @app.get("/api/me", tags=["auth"])
     def me(user: User = Depends(current_user)):
@@ -180,7 +197,8 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
 
     def agent_reply(session_id: str, reply) -> dict:
         # Which tools ran and why is developer information: it's in the LangSmith trace, not here.
-        return {"session_id": session_id, "reply": reply.text, "confirmation": reply.confirmation}
+        return {"session_id": session_id, "reply": reply.text, "confirmation": reply.confirmation,
+                "receipt": getattr(reply, "receipt", None)}  # built by code from what actually ran
 
     @app.post("/api/chat", tags=["chat"])
     def chat(body: ChatIn, user: User = Depends(current_user)):
@@ -192,6 +210,31 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
     def confirm(body: ConfirmIn, user: User = Depends(current_user)):
         reply = services.agent().answer(user.user_id, thread_for(user, body.session_id), body.approve)
         return agent_reply(body.session_id, reply)
+
+    def event_stream(events, session_id: str):
+        """Server-Sent Events: one `data: {json}` line per event. Errors end the stream with an error event."""
+        try:
+            for event in events:
+                if event["type"] == "done":
+                    event = {**event, "session_id": session_id}
+                yield f"data: {json.dumps(event)}\n\n"
+        except Exception as exc:  # the page shows it like any failed request
+            yield f"data: {json.dumps({'type': 'error', 'detail': f'Something went wrong: {type(exc).__name__}'})}\n\n"
+
+    def sse(generator) -> StreamingResponse:
+        return StreamingResponse(generator, media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+    @app.post("/api/chat/stream", tags=["chat"])
+    def chat_stream(body: ChatIn, user: User = Depends(current_user)):
+        session_id = body.session_id or uuid.uuid4().hex[:12]
+        events = services.agent().stream(user.user_id, thread_for(user, session_id), text=body.message.strip())
+        return sse(event_stream(events, session_id))
+
+    @app.post("/api/chat/confirm/stream", tags=["chat"])
+    def confirm_stream(body: ConfirmIn, user: User = Depends(current_user)):
+        events = services.agent().stream(user.user_id, thread_for(user, body.session_id), approve=body.approve)
+        return sse(event_stream(events, body.session_id))
 
     # ---- PayPal account data (through the same executor the agent uses) ------------------------
 
@@ -205,8 +248,10 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
     def overview(user: User = Depends(current_user)):
         disputes = filter_results(user, "list_disputes", call("list_disputes", {"page_size": 50}, user))["items"]
         counts = {u["dispute_id"]: u for u in dispute_updates(user, services.executor, services.appdb)}
+        requests = services.appdb.refund_requests()
         for d in disputes:  # same "new" rule as the assistant's check_updates tool
             d["unread"] = counts.get(d["dispute_id"], {}).get("unread", 0)
+            d["refund_request"] = open_refund_request(d, requests)  # "Refund requested" until refunded or an offer is made
             d["message_count"] = counts.get(d["dispute_id"], {}).get("message_count", 0)
         if user.is_customer:
             invoices = call("search_for_invoices", {"recipient_email": user.email}, user)["items"]
@@ -489,12 +534,15 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         return result.body
 
     def conversation(dispute: dict) -> dict:
+        dispute["refund_request"] = open_refund_request(dispute, services.appdb.refund_requests())
         tx = (dispute.get("disputed_transactions") or [{}])[0]
         names = {"BUYER": (tx.get("buyer") or {}).get("name", "Customer"), "SELLER": (tx.get("seller") or {}).get("name", "Shop")}
         messages = [{"from": m["posted_by"], "name": names.get(m["posted_by"], m["posted_by"]),
                      "time": m["time_posted"], "text": m["content"]}
                     for m in sorted(dispute.get("messages", []), key=lambda m: m["time_posted"])]
-        return {"dispute": dispute, "messages": messages, "can_reply": dispute.get("status") != "RESOLVED"}
+        return {"dispute": dispute, "messages": messages, "can_reply": dispute.get("status") != "RESOLVED",
+                "can_resolve": dispute.get("status") in ("WAITING_FOR_SELLER_RESPONSE", "OPEN"),
+                "offer": dispute.get("offer")}
 
     @app.get("/api/disputes/{dispute_id}", tags=["disputes"])
     def open_dispute(dispute_id: str, user: User = Depends(current_user)):
@@ -523,6 +571,38 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
     def whats_new_for_me(user: User = Depends(current_user)):
         """New messages, replies you owe, and messages still waiting for an answer (no LLM involved)."""
         return {"items": whats_new(user, services.executor, services.appdb)}
+
+    @app.post("/api/disputes/{dispute_id}/resolve", tags=["disputes"])
+    def resolve_dispute(dispute_id: str, body: ResolveIn, user: User = Depends(require_role("accountant"))):
+        """The shop resolves a dispute with the customer: refund in full, or offer a partial refund
+        (the customer accepts or declines in the chat). Disputes stay between the shop and the
+        customer; there's no PayPal review in PayMind."""
+        dispute = own_dispute(user, dispute_id)
+        if dispute.get("status") == "RESOLVED":
+            raise HTTPException(409, "This dispute is already resolved.")
+        note = (body.note or "").strip() or None
+        if body.action == "refund":
+            tool, params = "accept_claim", {"dispute_id": dispute_id, **({"note": note} if note else {})}
+        elif body.action == "offer":
+            try:
+                amount = Decimal(str(body.amount or "0"))
+            except Exception:
+                raise HTTPException(422, "The offer amount must be a number.")
+            if amount <= 0 or amount > Decimal(dispute["dispute_amount"]["value"]):
+                raise HTTPException(422, f"Offer between 0.01 and the disputed {dispute['dispute_amount']['value']}.")
+            tool, params = "make_offer_to_resolve_dispute", {
+                "dispute_id": dispute_id, "offer_type": "REFUND",
+                "offer_amount": {"currency_code": dispute["dispute_amount"]["currency_code"], "value": f"{amount:.2f}"},
+                **({"note": note} if note else {})}
+        card = services.registry.get(tool) or {}
+        result = services.executor.execute(tool, params, caller=user)
+        services.appdb.log_action(user, tool, params, "success" if result.ok else "failed", method=card.get("method"),
+                                  path=card.get("path"), http_status=result.status_code,
+                                  result_summary=(result.error or f"dispute {dispute_id}: {body.action}")[:300],
+                                  confirmed=True, request_id=result.request_id)
+        if not result.ok:
+            raise HTTPException(422 if result.status_code == 422 else 502, result.error)
+        return conversation(own_dispute(user, dispute_id))
 
     # ---- audit --------------------------------------------------------------------------
 

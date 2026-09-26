@@ -56,7 +56,7 @@ def test_describe_error():
 def test_read_tool(executor):
     result = executor.execute("list_disputes", {"dispute_state": "REQUIRED_ACTION"})
     assert result.ok and result.status_code == 200
-    assert result.body["items"][0]["disputed_transactions"][0]["buyer"]["payer_id"] == "user_123"
+    assert "user_123" in [d["disputed_transactions"][0]["buyer"]["payer_id"] for d in result.body["items"]]
     assert result.request_id is None  # reads don't need one
     assert result.attempts == 1
 

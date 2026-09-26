@@ -68,9 +68,23 @@ def _parse(ts: str):
     return datetime.fromisoformat(ts.replace("Z", "+00:00"))
 
 
+def open_refund_request(dispute: dict, requests: dict[str, dict]) -> dict | None:
+    """The customer's refund request while it's the shop's turn. Refunding resolves the dispute and an
+    offer hands the turn to the customer, so either one clears it (if the customer declines the offer,
+    the turn and the request come back)."""
+    request = requests.get(dispute.get("dispute_id"))
+    if not request or dispute.get("status") not in ("WAITING_FOR_SELLER_RESPONSE", "OPEN"):
+        return None
+    return {k: request[k] for k in ("amount", "message", "time")}
+
+
 def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, waiting_days: int = WAITING_DAYS) -> list[dict[str, Any]]:
     """Things that need the user's attention on open disputes, most urgent first:
 
+      invoice_overdue / invoice_due  unpaid invoices: past their due date (both sides; the shop sees
+                    which customer owes), or due within INVOICE_SOON_DAYS days (customer)
+      refund_requested  (shop) the customer formally asked for a full refund; stays until the shop
+                    refunds or makes an offer
       new_message   the other side wrote and the user hasn't seen it
       needs_reply   the other side wrote, the user has seen it, but hasn't answered
       no_reply_yet  the user wrote `waiting_days`+ days ago and the other side hasn't answered
@@ -93,6 +107,7 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
     if not listed.ok:
         raise RuntimeError(listed.error)
     reads = appdb.dispute_reads(user.user_id)
+    requests = appdb.refund_requests()
     items = []
     for row in filter_results(user, "list_disputes", listed.body)["items"]:
         if row.get("status") == "RESOLVED":
@@ -109,13 +124,23 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
             "dispute_id": dispute["dispute_id"], "reason": dispute.get("reason"), "amount": dispute.get("dispute_amount"),
             "with": other_name, "time": last["time_posted"], "text": last["content"],
         }
+        if dispute.get("offer"):  # the shop's offer waiting for the customer's answer
+            base["offer"] = {"amount": dispute["offer"].get("offer_amount"), "type": dispute["offer"].get("offer_type"),
+                             "note": dispute["offer"].get("note")}
         my_turn_status = "WAITING_FOR_BUYER_RESPONSE" if user.is_customer else "WAITING_FOR_SELLER_RESPONSE"
         if dispute.get("status") == my_turn_status:
             due = dispute.get("seller_response_due_date") if not user.is_customer else dispute.get("buyer_response_due_date")
             base["action_needed"] = True
             base["due_date"] = due
             base["days_left"] = (_parse(due) - now).days if due else None
-        if last["posted_by"] == other_side(user):
+        request = open_refund_request(dispute, requests)
+        if request:
+            base["refund_request"] = request
+        if request and not user.is_customer:  # a clear to-do for the shop, above a plain "new message"
+            new = unread(user, dispute, reads.get(dispute["dispute_id"], 0))
+            items.append({**base, "kind": "refund_requested", "count": len(new), "time": request["time"],
+                          "text": request["message"]})
+        elif last["posted_by"] == other_side(user):
             new = unread(user, dispute, reads.get(dispute["dispute_id"], 0))
             items.append({**base, "kind": "new_message" if new else "needs_reply", "count": len(new)})
         elif base.get("action_needed"):
@@ -123,10 +148,42 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
         elif (now - _parse(last["time_posted"])).days >= waiting_days:
             items.append({**base, "kind": "no_reply_yet", "days": (now - _parse(last["time_posted"])).days})
     items += po_updates(user, appdb, now, executor)
-    order = {"new_message": 0, "action_needed": 1, "po_not_received": 1, "po_confirm": 1, "po_ship": 1, "new_po": 1,
+    items += invoice_updates(user, executor, now)
+    order = {"invoice_overdue": 1, "invoice_due": 2, "refund_requested": 0, "new_message": 0, "action_needed": 1, "po_not_received": 1, "po_confirm": 1, "po_ship": 1, "new_po": 1,
              "po_pay": 2, "po_send_invoice": 2, "needs_reply": 2, "po_shipped": 3, "po_accepted": 3, "po_rejected": 3, "no_reply_yet": 4}
     # overdue / closest deadline first, then by kind, then oldest first
     return sorted(items, key=lambda i: (i.get("days_left") is None, i.get("days_left") or 0, order[i["kind"]], i["time"]))
+
+
+INVOICE_SOON_DAYS = 3  # a customer is reminded this many days before an invoice is due
+UNPAID = ("SENT", "UNPAID", "PARTIALLY_PAID", "SCHEDULED")
+
+
+def invoice_updates(user: User, executor: Executor, now) -> list[dict[str, Any]]:
+    """Unpaid invoices that need attention: overdue (both sides), or due soon (customer)."""
+    if user.is_customer:
+        found = executor.execute("search_for_invoices", {"recipient_email": user.email}, caller=user)
+    else:
+        found = executor.execute("list_invoices", {"page_size": 100}, caller=user)
+    if not found.ok:
+        return []
+    items = []
+    for inv in found.body.get("items", []):
+        due = ((inv.get("detail") or {}).get("payment_term") or {}).get("due_date")
+        if inv.get("status") not in UNPAID or not due:
+            continue
+        days_left = (_parse(due + "T23:59:59Z") - now).days
+        if days_left >= 0 and (not user.is_customer or days_left > INVOICE_SOON_DAYS):
+            continue
+        billing = ((inv.get("primary_recipients") or [{}])[0].get("billing_info") or {})
+        name = " ".join(filter(None, [(billing.get("name") or {}).get("given_name"), (billing.get("name") or {}).get("surname")]))
+        items.append({
+            "kind": "invoice_overdue" if days_left < 0 else "invoice_due", "invoice_id": inv["id"],
+            "invoice_number": (inv.get("detail") or {}).get("invoice_number"), "amount": inv.get("due_amount") or inv.get("amount"),
+            "due_date": due, "days_left": days_left, "with": name or billing.get("email_address") or "a customer",
+            "time": due, "text": "",
+        })
+    return items
 
 
 PO_RECENT_DAYS = 14  # how long a customer keeps seeing "your PO was accepted / rejected"

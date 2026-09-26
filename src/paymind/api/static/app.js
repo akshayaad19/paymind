@@ -86,7 +86,13 @@ async function login(email, password) {
 }
 
 function logout(message) {
-  state.token = null; state.user = null; state.sessionId = null; state.data = null;
+  // Clicking "Log out" also tells the server, so this token (and any copy of it) stops working.
+  // After a 401 (message given) the token is already dead: nothing to tell.
+  if (state.token && !message) {
+    fetch("/api/auth/logout", { method: "POST", headers: { Authorization: `Bearer ${state.token}` } }).catch(() => {});
+  }
+  state.token = null; state.user = null; state.sessionId = null; state.data = null; state.customerFilter = "";
+  $("#customer-filter").value = "";
   $("#drawer").hidden = $("#drawer-backdrop").hidden = true;
   $("#po-drawer").hidden = $("#po-backdrop").hidden = true;
   $("#app-view").hidden = true;
@@ -135,7 +141,7 @@ function switchTab(name) {
   if (name === "data") loadData();
   if (name === "audit") loadAudit();
   if (name === "orders") loadOrders();
-  if (name === "chat") $("#input").focus();
+  if (name === "chat") { $("#input").focus(); loadWhatsNew(); }
 }
 
 // ---------------------------------------------------------------- chat
@@ -157,9 +163,10 @@ function addMessage(who, html, extraClass = "") {
   return el;
 }
 
-function renderReply(res) {
+function renderReply(res, streamed = null) {
   state.sessionId = res.session_id;
   if (res.confirmation) {
+    streamed?.remove();  // any words written before the pause are replaced by the confirm card
     const c = res.confirmation;
     const el = addMessage("bot", `
       <div class="confirm-card">
@@ -174,15 +181,76 @@ function renderReply(res) {
     return;
   }
   const failed = /can't reach the AI model/.test(res.reply || "");
-  addMessage("bot", md(res.reply || "(no answer)"), failed ? "error" : "");
+  // The receipt comes from the server's record of what actually ran, not from the AI's wording.
+  const r = res.receipt;
+  const receiptHtml = r ? `<div class="receipt ${r.changes.some((c) => c.outcome === "done") ? "changed" : ""}">🧾 ${esc(r.summary)}</div>` : "";
+  const html = md(res.reply || "(no answer)") + receiptHtml;
+  if (streamed) {  // the streamed bubble becomes the final answer (same text, now with the receipt)
+    const bubble = streamed.querySelector(".bubble");
+    bubble.innerHTML = html;
+    bubble.classList.toggle("error", failed);
+  } else {
+    addMessage("bot", html, failed ? "error" : "");
+  }
+  loadWhatsNew();
 }
 
-async function withTyping(promise) {
+// Streams a chat request: the "…" dots show until the first words arrive, then the answer is
+// typed into its bubble as Gemini writes it. Gemini sends a sentence or so at a time, very fast,
+// so received text goes into a queue that is typed out a few characters per frame (faster when
+// a lot is waiting). The final "done" event carries the full result (reply, confirmation,
+// receipt), which replaces the streamed text once the typing has caught up.
+async function streamChat(path, body) {
   state.busy = true;
   $("#send").disabled = true;
   const typing = addMessage("bot", `<span class="typing"><span></span><span></span><span></span></span>`);
-  try { return await promise; }
-  finally { typing.remove(); state.busy = false; $("#send").disabled = false; }
+  let bubble = null, text = "", shown = 0, final = null, ticking = null;
+  const tick = () => {
+    if (shown >= text.length) { ticking = null; return; }
+    if (!bubble) { typing.remove(); bubble = addMessage("bot", ""); }
+    shown = Math.min(text.length, shown + Math.max(2, Math.ceil((text.length - shown) / 30)));
+    bubble.querySelector(".bubble").innerHTML = md(text.slice(0, shown));
+    bubble.scrollIntoView({ block: "end" });
+    ticking = requestAnimationFrame(tick);
+  };
+  const caughtUp = () => new Promise((resolve) => {
+    const wait = () => (shown >= text.length ? resolve() : setTimeout(wait, 30));
+    wait();
+  });
+  try {
+    const res = await fetch(path, { method: "POST", body: JSON.stringify(body),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${state.token}` } });
+    if (res.status === 401) { logout("Your session has expired. Please log in again."); throw new Error("unauthorized"); }
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || `Request failed (${res.status})`);
+    const reader = res.body.getReader(), decoder = new TextDecoder();
+    let buffer = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop();
+      for (const raw of events) {
+        if (!raw.startsWith("data: ")) continue;
+        const ev = JSON.parse(raw.slice(6));
+        if (ev.type === "error") throw new Error(ev.detail);
+        if (ev.type === "done") { final = ev; continue; }
+        if (ev.type === "restart") { text = ""; shown = 0; continue; }
+        if (ev.type === "token") {
+          text += ev.text;
+          if (!ticking) ticking = requestAnimationFrame(tick);
+        }
+      }
+    }
+    if (!final) throw new Error("The answer was cut off. Please try again.");
+    if (final.reply && !final.confirmation) await caughtUp();
+    return { final, bubble };
+  } finally {
+    if (ticking) cancelAnimationFrame(ticking);
+    typing.remove();
+    state.busy = false;
+    $("#send").disabled = false;
+  }
 }
 
 async function send(text) {
@@ -191,8 +259,8 @@ async function send(text) {
   $("#input").value = "";
   autosize();
   try {
-    const res = await withTyping(api("/api/chat", { method: "POST", body: JSON.stringify({ message: text, session_id: state.sessionId }) }));
-    renderReply(res);
+    const out = await streamChat("/api/chat/stream", { message: text, session_id: state.sessionId });
+    renderReply(out.final, out.bubble);
   } catch (err) {
     if (err.message !== "unauthorized") addMessage("bot", esc(err.message), "error");
   }
@@ -203,8 +271,8 @@ async function answer(cardEl, approve) {
   card.classList.add("done");
   card.querySelector(".buttons").innerHTML = approve ? badge("approved", "ok") : badge("cancelled", "declined");
   try {
-    const res = await withTyping(api("/api/chat/confirm", { method: "POST", body: JSON.stringify({ session_id: state.sessionId, approve }) }));
-    renderReply(res);
+    const out = await streamChat("/api/chat/confirm/stream", { session_id: state.sessionId, approve });
+    renderReply(out.final, out.bubble);
   } catch (err) {
     if (err.message !== "unauthorized") addMessage("bot", esc(err.message), "error");
   }
@@ -230,10 +298,10 @@ const DISPUTE_REASONS = {
 function disputeReason(d) { return DISPUTE_REASONS[d.reason] || String(d.reason || "").replaceAll("_", " ").toLowerCase(); }
 function disputeStatus(d) {
   const shop = state.user.role === "accountant";
+  if (d.refund_request) return shop ? { text: "Refund requested by customer", kind: "error" } : { text: "Refund requested", kind: "waiting" };
   switch (d.status) {
     case "WAITING_FOR_SELLER_RESPONSE": return shop ? { text: "Needs your response", kind: "error" } : { text: "Waiting for the shop", kind: "waiting" };
     case "WAITING_FOR_BUYER_RESPONSE": return shop ? { text: "Waiting for the customer", kind: "waiting" } : { text: "Needs your response", kind: "error" };
-    case "UNDER_REVIEW": return { text: "PayPal is reviewing", kind: "waiting" };
     case "RESOLVED": return { text: "Resolved", kind: "ok" };
     default: return { text: String(d.status || "").replaceAll("_", " ").toLowerCase(), kind: "neutral" };
   }
@@ -256,6 +324,37 @@ function invoiceStatus(inv) {
 
 function buyerOf(d) { return d.disputed_transactions?.[0]?.buyer || {}; }
 function recipientOf(inv) { const b = inv.primary_recipients?.[0]?.billing_info || {}; return b.email_address || "—"; }
+function recipientName(inv) { const n = inv.primary_recipients?.[0]?.billing_info?.name || {}; return [n.given_name, n.surname].filter(Boolean).join(" "); }
+function payerName(t) { const n = t.payer_info?.payer_name; return n ? `${n.given_name} ${n.surname}` : ""; }
+function invoiceNumber(id) { return state.data?.invoices?.find((i) => i.id === id)?.detail?.invoice_number || id; }
+// How a payment was made, from PayPal's own fields: invoice_id → paid an invoice,
+// store_info → paid at the shop's till, otherwise → online store checkout.
+function paidHow(t) {
+  const i = t.transaction_info;
+  if (i.transaction_event_code === "T1107") return `<span class="muted">Refund to customer</span>`;
+  if (i.invoice_id) return `🧾 Invoice <b>${esc(invoiceNumber(i.invoice_id))}</b>`;
+  if (t.store_info) return `🏬 In store<div class="desc">${esc(t.store_info.store_id)} · till ${esc(t.store_info.terminal_id)}</div>`;
+  return `🌐 Online store`;
+}
+function paidOn(inv) { return inv.payments?.transactions?.[0]?.payment_date; }
+
+// Accountants can narrow every table to one customer (name, email or payer ID): their disputes,
+// invoice history (with when each was paid) and payments, to check a claim like "charged twice".
+const CUSTOMER_FIELDS = {
+  disputes: (d) => [buyerOf(d).name, buyerOf(d).email, buyerOf(d).payer_id],
+  invoices: (i) => [recipientName(i), recipientOf(i)],
+  transactions: (t) => [payerName(t), t.payer_info?.email_address, t.payer_info?.payer_id],
+};
+function forCustomer(view, rows) {
+  const q = (state.customerFilter || "").trim().toLowerCase();
+  if (!q) return rows;
+  return rows.filter((r) => CUSTOMER_FIELDS[view](r).some((f) => String(f || "").toLowerCase().includes(q)));
+}
+function customerNames(d) {
+  const names = new Set([...d.disputes.map((x) => buyerOf(x).name), ...d.invoices.map(recipientName),
+    ...(d.transactions || []).map(payerName)].filter(Boolean));
+  return [...names].sort();
+}
 
 const DATA_VIEWS = {
   disputes: {
@@ -279,15 +378,19 @@ const DATA_VIEWS = {
           ${canSend ? `<button class="btn btn-primary btn-sm" data-inv="send" data-id="${esc(i.id)}" data-to="${esc(recipientOf(i))}">Send</button>` : ""}
           ${canPay ? `<button class="btn btn-primary btn-sm" data-inv="pay" data-id="${esc(i.id)}" data-amount="${esc(i.due_amount?.value || "")}">Pay ${money(i.due_amount)}</button>` : ""}
         </div>`;
-      return [`<b>${esc(i.detail?.invoice_number)}</b><div class="desc mono">${esc(i.id)}</div>`, esc(recipientOf(i)),
-        `<span class="badge ${s.kind}">${esc(s.text)}</span>`, money(i.amount), money(i.due_amount),
+      const items = (i.items || []).map((it) => `${esc(it.name)} × ${esc(it.quantity)}`).join(", ");
+      const paid = paidOn(i) ? `<div class="desc">paid ${esc(fmtDate(paidOn(i)))}</div>` : "";
+      return [`<b>${esc(i.detail?.invoice_number)}</b><div class="desc">${items}</div><div class="desc mono">${esc(i.id)}</div>`,
+        `${recipientName(i) ? `${esc(recipientName(i))}<div class="desc">${esc(recipientOf(i))}</div>` : esc(recipientOf(i))}`,
+        `<span class="badge ${s.kind}">${esc(s.text)}</span>${paid}`, money(i.amount), money(i.due_amount),
         esc(i.detail?.payment_term?.due_date || "—"), esc(i.detail?.invoice_date), actions]; },
   },
   transactions: {
     label: "Transactions",
-    head: ["Transaction", "Type", "Customer", "Amount", "Fee", "Date"],
+    head: ["Transaction", "Type", "Paid how", "Customer", "Amount", "Fee", "Date"],
     row: (t) => { const i = t.transaction_info, p = t.payer_info || {}; const neg = Number(i.transaction_amount.value) < 0;
       return [`<code>${esc(i.transaction_id)}</code>`, badge(i.transaction_event_code === "T1107" ? "refund" : "sale", i.transaction_event_code === "T1107" ? "declined" : "ok"),
+        paidHow(t),
         esc(p.payer_name ? `${p.payer_name.given_name} ${p.payer_name.surname}` : "—"),
         `<span class="${neg ? "amount-neg" : "amount-pos"}">${money(i.transaction_amount)}</span>`, money(i.fee_amount), shortDate(i.transaction_initiation_date)]; },
   },
@@ -317,6 +420,8 @@ async function loadData() {
     $("#stats").innerHTML = [["My open disputes", open], ["My unpaid invoices", unpaid.length]]
       .map(([l, v]) => `<div class="stat"><div class="label">${l}</div><div class="value">${v}</div></div>`).join("");
   }
+  $("#customer-filter-wrap").hidden = d.role !== "accountant";
+  if (d.role === "accountant") $("#customer-names").innerHTML = customerNames(d).map((n) => `<option value="${esc(n)}">`).join("");
   const views = Object.keys(DATA_VIEWS).filter((k) => Array.isArray(d[k]));
   if (!views.includes(state.dataTab)) state.dataTab = views[0];
   $("#data-subtabs").innerHTML = views.map((k) => `<button data-view="${k}" class="${k === state.dataTab ? "on" : ""}">${DATA_VIEWS[k].label}${k === "transactions" ? "" : ` · ${d[k].length}`}</button>`).join("");
@@ -369,7 +474,19 @@ async function loadTransactions() {
     if (err.message !== "unauthorized") $("#data-table").innerHTML = `<tr><td class="empty-row">${esc(err.message)}</td></tr>`;
     return;
   }
-  const t = state.tx.totals;
+  renderTransactions();
+}
+
+// Totals follow the customer filter, so "Priya: 3 sales, 1 refund" is one glance.
+function renderTransactions() {
+  const all = state.tx.transactions, rows = forCustomer("transactions", all);
+  let t = state.tx.totals;
+  if (rows !== all) {
+    const sum = (code) => rows.filter((r) => r.transaction_info.transaction_event_code === code)
+      .reduce((s, r) => s + Number(r.transaction_info.transaction_amount.value), 0);
+    const fees = rows.reduce((s, r) => s + Number(r.transaction_info.fee_amount?.value || 0), 0);
+    t = { sales: sum("T0006"), refunds: sum("T1107"), fees, net: sum("T0006") + sum("T1107") + fees, count: rows.length };
+  }
   $("#tx-totals").innerHTML = [
     ["Sales", `<span class="amount-pos">${money({ value: t.sales })}</span>`],
     ["Refunds", `<span class="amount-neg">${money({ value: t.refunds })}</span>`],
@@ -377,7 +494,12 @@ async function loadTransactions() {
     ["Net", money({ value: t.net })],
     ["Transactions", t.count],
   ].map(([l, v]) => `<span class="chip">${l}<b>${v}</b></span>`).join("");
-  renderRows(DATA_VIEWS.transactions, state.tx.transactions, "No transactions in this period.");
+  renderRows(DATA_VIEWS.transactions, rows, rows === all ? "No transactions in this period." : "No transactions for this customer in this period. Try ◀ for earlier months.");
+  filterNote(rows.length, all.length);
+}
+
+function filterNote(shown, total) {
+  $("#customer-filter-note").textContent = state.customerFilter?.trim() ? `Showing ${shown} of ${total}` : "";
 }
 
 function renderRows(view, rows, emptyText = "Nothing here.") {
@@ -391,8 +513,9 @@ function renderDataTable() {
   $("#tx-toolbar").hidden = !isTx;
   $("#tx-totals").hidden = !isTx;
   if (isTx) return loadTransactions();
-  const view = DATA_VIEWS[state.dataTab], rows = state.data[state.dataTab];
-  renderRows(view, rows);
+  const view = DATA_VIEWS[state.dataTab], all = state.data[state.dataTab], rows = forCustomer(state.dataTab, all);
+  renderRows(view, rows, rows === all ? "Nothing here." : "Nothing for this customer.");
+  filterNote(rows.length, all.length);
 }
 
 // ---------------------------------------------------------------- what's new (top of chat, no AI needed)
@@ -418,9 +541,12 @@ function whatsNewItem(i) {
   const due = !i.action_needed ? "" : i.days_left === null ? " · action needed"
     : i.days_left < 0 ? ` · <span class="amount-neg">overdue by ${-i.days_left} day${i.days_left === -1 ? "" : "s"}</span>`
     : ` · respond by ${esc(new Date(i.due_date).toLocaleDateString(undefined, { day: "numeric", month: "short" }))} (${i.days_left === 0 ? "today" : `${i.days_left} day${i.days_left === 1 ? "" : "s"} left`})`;
+  const offer = i.offer && state.user.role === "customer"
+    ? `🤝 The shop offered ${money(i.offer.amount)} to settle this. Reply in the chat: “accept the offer” or “decline the offer”${due}` : null;
   const texts = {
-    action_needed: [`🔴 Action needed · ${esc(i.with)}${due}`, "Open", "open"],
+    action_needed: [offer || `🔴 Action needed · ${esc(i.with)}${due}`, "Open", "open"],
     new_message: [`📬 New message from ${esc(i.with)} · ${timeAgo(i.time)}${due}`, "Open", "open"],
+    refund_requested: [`💸 ${esc(i.with)} asked for a full refund (${money(i.refund_request?.amount || i.amount)}) · ${timeAgo(i.time)}${due}`, "Resolve", "open"],
     needs_reply: [`✍️ ${esc(i.with)} wrote ${timeAgo(i.time)} · waiting for your reply${due}`, "Reply", "open"],
     no_reply_yet: [`⏳ You wrote ${timeAgo(i.time)} · no reply yet from ${esc(i.with)}`, "Send a reminder", "remind"],
     new_po: [`📥 New purchase order from ${esc(i.with)} · ${timeAgo(i.time)}${i.requested_date ? ` · needed by ${esc(fmtDate(i.requested_date))}` : ""}`, "Review", "po"],
@@ -433,6 +559,14 @@ function whatsNewItem(i) {
     po_shipped: [`🚚 Your order has shipped${i.tracking_number ? ` · ${esc(i.carrier || "")} ${esc(i.tracking_number)}` : ""} · expected ${esc(fmtDate(i.expected_date))}`, "Track", "po"],
     po_confirm: [`📦 Has your order arrived? It was expected ${esc(fmtDate(i.expected_date))}`, "Confirm", "po"],
   };
+  if (i.kind === "invoice_overdue" || i.kind === "invoice_due") {
+    const shop = state.user.role === "accountant";
+    const when = i.days_left < 0 ? `<span class="amount-neg">overdue by ${-i.days_left} day${i.days_left === -1 ? "" : "s"}</span>`
+      : i.days_left === 0 ? "due today" : `due in ${i.days_left} day${i.days_left === 1 ? "" : "s"}`;
+    const what = shop ? `🧾 ${esc(i.with)}'s invoice is ${when}` : `🧾 Your invoice is ${when}`;
+    return `<div class="wn-item"><div><div class="what">${what}</div><div class="quote">${esc(i.invoice_number || i.invoice_id)} · ${money(i.amount)} · due ${esc(fmtDate(i.due_date))}</div></div>
+      <button class="btn ${shop ? "btn-ghost" : "btn-primary"}" data-wn="invoice">${shop ? "View" : "Pay"}</button></div>`;
+  }
   if (i.kind.startsWith("po") || i.kind === "new_po") {
     const [what, label] = texts[i.kind];
     const ref = i.customer_po_ref ? ` · your ref ${esc(i.customer_po_ref)}` : "";
@@ -448,21 +582,32 @@ function whatsNewItem(i) {
       data-days="${i.days || ""}">${label}</button></div>`;
 }
 
+// Builds the card, or updates it in place, so it always matches what's true right now.
+// Called at login, when opening the Chat tab, and after every action that can change it.
 async function loadWhatsNew() {
+  if (!state.token) return;
   let res;
   try { res = await api("/api/whats-new"); } catch { return; }
-  if (!res.items.length || state.sessionId) return;  // nothing to show, or the chat already started
+  let card = $("#whats-new");
+  if (!res.items.length) {
+    if (card) card.remove();
+    if (!$("#messages").children.length) $("#messages").append($("#chat-empty-template").content.cloneNode(true));
+    return;
+  }
+  const html = `<h3>What's new</h3>${res.items.map(whatsNewItem).join("")}`;
+  if (card) { card.innerHTML = html; return; }
   $("#chat-empty")?.remove();
-  const card = document.createElement("div");
+  card = document.createElement("div");
   card.className = "whats-new";
   card.id = "whats-new";
-  card.innerHTML = `<h3>What's new</h3>${res.items.map(whatsNewItem).join("")}`;
+  card.innerHTML = html;
   $("#messages").prepend(card);
   card.addEventListener("click", (e) => {
     const b = e.target.closest("[data-wn]");
     if (!b) return;
     if (b.dataset.wn === "open") return openDispute(b.dataset.dispute);
     if (b.dataset.wn === "po") { switchTab("orders"); return openPO(b.dataset.po); }
+    if (b.dataset.wn === "invoice") { state.dataTab = "invoices"; return switchTab("data"); }
     const days = b.dataset.days ? ` I wrote ${b.dataset.days} days ago and haven't heard back.` : "";
     send(`Send a polite reminder on dispute ${b.dataset.dispute}.${days}`);
   });
@@ -492,7 +637,7 @@ async function payInvoice(btn) {
   try {
     await api(`/api/invoices/${encodeURIComponent(btn.dataset.id)}/pay`, { method: "POST" });
     toast("Paid with PayPal. Thank you!");
-    loadData();
+    loadData(); loadWhatsNew();
   } catch (err) { if (err.message !== "unauthorized") { toast(err.message); btn.disabled = false; } }
 }
 
@@ -509,7 +654,7 @@ async function sendInvoice(btn) {
   try {
     await api(`/api/invoices/${encodeURIComponent(btn.dataset.id)}/send`, { method: "POST" });
     toast(`Invoice sent to ${btn.dataset.to}.`);
-    loadData();
+    loadData(); loadWhatsNew();
   } catch (err) {
     if (err.message !== "unauthorized") { toast(err.message); btn.disabled = false; delete btn.dataset.armed; btn.textContent = "Send"; }
   }
@@ -581,7 +726,7 @@ async function poAction(path, body, message) {
   try {
     const res = await api(`/api/pos/${encodeURIComponent(po.po_id)}/${path}`, { method: "POST", body: JSON.stringify(body || {}) });
     toast(message);
-    showPO(res); loadOrders();
+    showPO(res); loadOrders(); loadWhatsNew();
   } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
 }
 
@@ -589,7 +734,7 @@ async function poPay() {
   try {
     await api(`/api/invoices/${encodeURIComponent(po.invoice_id)}/pay`, { method: "POST" });
     toast("Paid with PayPal. Thank you!");
-    openPO(po.po_id); loadOrders();
+    openPO(po.po_id); loadOrders(); loadWhatsNew();
   } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
 }
 
@@ -597,7 +742,7 @@ async function poSendInvoice() {
   try {
     await api(`/api/invoices/${encodeURIComponent(po.invoice_id)}/send`, { method: "POST" });
     toast(`Invoice sent to ${po.customer?.email || "the customer"}.`);
-    openPO(po.po_id); loadOrders();
+    openPO(po.po_id); loadOrders(); loadWhatsNew();
   } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
 }
 
@@ -644,13 +789,25 @@ async function uploadPO(file) {
   if (!file) return;
   const fd = new FormData();
   fd.append("file", file);
-  toast("Reading your purchase order…");
+  // reading a photo with the AI can take a while: say so, and keep the buttons disabled until it's done
+  const label = $("#po-upload-label"), typeBtn = $("#po-type");
+  const labelText = label.firstChild.textContent;  // the text before the hidden <input>
+  label.classList.add("busy");
+  label.firstChild.textContent = "⏳ Reading your PO… (up to a minute)";
+  typeBtn.disabled = true;
+  $("#po-file").disabled = true;
   try {
     const res = await apiUpload("/api/pos/read", fd);
     showPO(res.po, { unclear: res.unclear, readOk: res.read_ok });
     loadOrders();
   } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
-  finally { $("#po-file").value = ""; }
+  finally {
+    label.classList.remove("busy");
+    label.firstChild.textContent = labelText;
+    typeBtn.disabled = false;
+    $("#po-file").disabled = false;
+    $("#po-file").value = "";
+  }
 }
 
 async function openPO(id) {
@@ -796,20 +953,28 @@ async function savePO(send) {
                          : await api("/api/pos", { method: "POST", body: JSON.stringify(body) });
     if (send) saved = await api(`/api/pos/${encodeURIComponent(saved.po_id)}/submit`, { method: "POST" });
     toast(send ? `${saved.po_id} sent to the shop.` : `${saved.po_id} saved as a draft.`);
-    closePO(); loadOrders();
+    closePO(); loadOrders(); loadWhatsNew();
   } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
 }
 
 async function decidePO(accept) {
   if (accept) {
     const items = readItems();
-    if (!items.length || items.some((i) => !i.unit_price)) return toast("Give every item a unit price.");
+    // show exactly what's missing: price fields and the date turn red until filled in
+    const missingPrices = $$("#po-items tbody tr").filter((tr) => tr.querySelector('[data-f="name"]').value.trim()
+      && !tr.querySelector('[data-f="unit_price"]').value.trim());
+    $$("#po-items input.missing, #po-expected.missing").forEach((el) => el.classList.remove("missing"));
+    missingPrices.forEach((tr) => tr.querySelector('[data-f="unit_price"]').classList.add("missing"));
+    if (!items.length || missingPrices.length) {
+      missingPrices[0]?.querySelector('[data-f="unit_price"]').focus();
+      return toast(`Add a unit price for ${missingPrices.length === 1 ? `“${missingPrices[0].querySelector('[data-f="name"]').value.trim()}”` : `${missingPrices.length} items`} (the customer didn't include one).`);
+    }
     const expected = $("#po-expected").value;
-    if (!expected) return toast("Pick an expected delivery date.");
+    if (!expected) { $("#po-expected").classList.add("missing"); $("#po-expected").focus(); return toast("Pick an expected delivery date."); }
     try {
       const res = await api(`/api/pos/${encodeURIComponent(po.po_id)}/accept`, { method: "POST", body: JSON.stringify({ items, expected_date: expected, note: $("#po-note").value.trim() || null }) });
       toast(`${res.po_id} accepted. A draft invoice was created (see PayMind data → Invoices).`);
-      closePO(); loadOrders();
+      closePO(); loadOrders(); loadWhatsNew();
     } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
     return;
   }
@@ -819,7 +984,7 @@ async function decidePO(accept) {
   if (reason.length < 3) return toast("Add a short reason for the customer.");
   try {
     const res = await api(`/api/pos/${encodeURIComponent(po.po_id)}/reject`, { method: "POST", body: JSON.stringify({ reason }) });
-    toast(`${res.po_id} declined.`); closePO(); loadOrders();
+    toast(`${res.po_id} declined.`); closePO(); loadOrders(); loadWhatsNew();
   } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
 }
 
@@ -827,23 +992,78 @@ async function decidePO(accept) {
 
 let openDisputeId = null;
 
+let threadState = null;  // the open dispute (for the resolve box)
+
+function resolveChoice() { return document.querySelector('input[name="resolve"]:checked').value; }
+
+function updateResolveBox() {
+  const choice = resolveChoice(), amount = threadState?.dispute?.dispute_amount;
+  $$(".resolve-fields [data-for]").forEach((el) => { el.hidden = el.dataset.for !== choice; });
+  $("#resolve-confirm").textContent = { refund: `Refund ${money(amount)}`, offer: "Send offer" }[choice];
+  $("#resolve-confirm").dataset.armed = "";
+}
+
+function openResolve() {
+  $("#resolve-box").hidden = false;
+  $("#resolve-open").hidden = true;
+  $("#thread-form").hidden = true;
+  $("#resolve-refund-text").textContent = `Give ${threadState.dispute.disputed_transactions?.[0]?.buyer?.name || "the customer"} their ${money(threadState.dispute.dispute_amount)} back; the dispute closes`;
+  updateResolveBox();
+}
+
+function closeResolve() {
+  $("#resolve-box").hidden = true;
+  if (threadState) renderThread(threadState);
+}
+
+async function confirmResolve() {
+  const btn = $("#resolve-confirm"), choice = resolveChoice();
+  const body = { action: choice, note: $("#resolve-note").value.trim() || null };
+  if (choice === "offer") {
+    body.amount = $("#resolve-amount").value.trim();
+    if (!body.amount || isNaN(Number(body.amount))) { $("#resolve-amount").focus(); return toast("Enter the amount you're offering."); }
+  }
+  if (!btn.dataset.armed) {  // second click confirms: money and case outcomes are hard to undo
+    btn.dataset.armed = "1";
+    btn.textContent = choice === "refund" ? `Confirm refund of ${money(threadState.dispute.dispute_amount)}?`
+      : `Confirm offer of ${money({ value: body.amount })}?`;
+    return;
+  }
+  btn.disabled = true;
+  try {
+    const res = await api(`/api/disputes/${encodeURIComponent(openDisputeId)}/resolve`, { method: "POST", body: JSON.stringify(body) });
+    toast({ refund: "Refunded. The dispute is resolved.", offer: "Offer sent to the customer." }[choice]);
+    ["#resolve-amount", "#resolve-note"].forEach((s) => { $(s).value = ""; });
+    $("#resolve-box").hidden = true;
+    renderThread(res);
+    loadData(); loadWhatsNew();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); updateResolveBox(); }
+  finally { btn.disabled = false; }
+}
+
 function renderThread(res) {
+  threadState = res;
+  const shopView = state.user.role === "accountant";
+  $("#resolve-open").hidden = !(shopView && res.can_resolve && $("#resolve-box").hidden);
   const d = res.dispute, s = disputeStatus(d), mine = state.user.role === "accountant" ? "SELLER" : "BUYER";
   $("#drawer-title").textContent = `${disputeReason(d)} · ${money(d.dispute_amount)}`;
   $("#drawer-sub").innerHTML = `<span class="mono">${esc(d.dispute_id)}</span><span class="badge ${s.kind}">${esc(s.text)}</span>` +
     (state.user.role === "accountant" ? `<span>with ${esc(buyerOf(d).name || "customer")}</span>` : "");
-  $("#thread").innerHTML = res.messages.map((m) => `
+  const rr = d.refund_request;
+  const requestLine = rr ? `<div class="refund-request">💸 ${shopView ? `${esc(buyerOf(d).name || "The customer")} asked` : "You asked"} for a full refund of <b>${money(rr.amount)}</b> · ${shortDate(rr.time)}${shopView ? " · use <b>Resolve…</b> to refund or make an offer" : " · waiting for the shop"}</div>` : "";
+  $("#thread").innerHTML = requestLine + res.messages.map((m) => `
     <div class="tmsg ${m.from === mine ? "mine" : ""}">
       <div class="who">${esc(m.from === mine ? "You" : m.name)} · ${shortDate(m.time)}</div>
       <div class="text">${esc(m.text)}</div>
     </div>`).join("") || `<p class="muted">No messages yet.</p>`;
   $("#thread").scrollTop = $("#thread").scrollHeight;
-  $("#thread-form").hidden = !res.can_reply;
+  $("#thread-form").hidden = !res.can_reply || !$("#resolve-box").hidden;
   $("#thread-closed").hidden = res.can_reply;
 }
 
 async function openDispute(id) {
   openDisputeId = id;
+  $("#resolve-box").hidden = true;
   $("#drawer").hidden = $("#drawer-backdrop").hidden = false;
   $("#thread").innerHTML = `<p class="muted">Loading…</p>`;
   try { renderThread(await api(`/api/disputes/${encodeURIComponent(id)}`)); $("#thread-input").focus(); }
@@ -852,8 +1072,10 @@ async function openDispute(id) {
 
 function closeDispute() {
   $("#drawer").hidden = $("#drawer-backdrop").hidden = true;
+  $("#resolve-box").hidden = true;
   openDisputeId = null;
   loadData();  // refresh the "new" badges
+  loadWhatsNew();
 }
 
 async function sendThreadMessage() {
@@ -863,6 +1085,7 @@ async function sendThreadMessage() {
   try {
     renderThread(await api(`/api/disputes/${encodeURIComponent(openDisputeId)}/messages`, { method: "POST", body: JSON.stringify({ message: text }) }));
     $("#thread-input").value = "";
+    loadWhatsNew();
   } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
   finally { $("#thread-send").disabled = false; }
 }
@@ -909,6 +1132,11 @@ document.addEventListener("DOMContentLoaded", () => {
     $$("#data-subtabs button").forEach((b) => b.classList.toggle("on", b.dataset.view === state.dataTab));
     renderDataTable();
   });
+  $("#customer-filter").addEventListener("input", (e) => {
+    state.customerFilter = e.target.value;
+    if (!state.data) return;
+    if (state.dataTab === "transactions" && state.tx) renderTransactions(); else renderDataTable();
+  });
   $("#audit-refresh").addEventListener("click", loadAudit);
   $("#data-table").addEventListener("click", (e) => {
     const inv = e.target.closest("[data-inv]");
@@ -944,6 +1172,10 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#po-drawer").addEventListener("input", (e) => { if (e.target.closest("#po-items")) updateTotal(); });
   $("#drawer-close").addEventListener("click", closeDispute);
+  $("#resolve-open").addEventListener("click", openResolve);
+  $("#resolve-cancel").addEventListener("click", closeResolve);
+  $("#resolve-confirm").addEventListener("click", confirmResolve);
+  $("#resolve-options").addEventListener("change", updateResolveBox);
   $("#drawer-backdrop").addEventListener("click", closeDispute);
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;

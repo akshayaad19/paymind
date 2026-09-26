@@ -83,9 +83,10 @@ def gemini_reader(models: list[str]) -> Reader:
     from langchain_core.messages import HumanMessage
     from langchain_google_genai import ChatGoogleGenerativeAI
 
-    from ..agent.factory import ModelChain
+    from ..agent.factory import ModelChain, gemini_timeout
 
-    structured = [(m, ChatGoogleGenerativeAI(model=m, max_retries=0).with_structured_output(POExtraction)) for m in models]
+    structured = [(m, ChatGoogleGenerativeAI(model=m, max_retries=0, timeout=gemini_timeout()).with_structured_output(POExtraction))
+                  for m in models]
     exhausted: dict[str, str] = {}
 
     def read(data: bytes, mime: str) -> POExtraction:

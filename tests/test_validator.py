@@ -136,3 +136,11 @@ def test_confirmation_shows_the_exact_message():
               {"dispute_id": "PP-D-88561", "message": "Hi Rahul, your order shipped on 20 Sep (tracking 1Z999)."})
     assert v.outcome == "needs_confirmation"
     assert "“Hi Rahul, your order shipped on 20 Sep (tracking 1Z999).”" in v.confirmation
+
+
+@pytest.mark.parametrize("tool", ["escalate_dispute_to_claim", "provide_evidence", "settle_dispute"])
+def test_paypal_review_tools_are_blocked_for_everyone(tool):
+    """PayMind settles disputes between shop and customer only: these tools are switched off for every role."""
+    for user in (ASHA, RAHUL):
+        v = check(tool, {"dispute_id": "PP-D-88561"}, user=user)
+        assert v.outcome == "blocked"

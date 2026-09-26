@@ -82,6 +82,12 @@
         </div>
       </div>
       <div class="stats" id="stats"></div>
+      <div class="customer-filter" id="customer-filter-wrap" hidden>
+        <input id="customer-filter" type="search" list="customer-names" autocomplete="off"
+               placeholder="🔎 Filter by customer: name, email or ID (e.g. Priya)">
+        <datalist id="customer-names"></datalist>
+        <span class="muted small" id="customer-filter-note"></span>
+      </div>
       <div class="subtabs" id="data-subtabs"></div>
       <div class="tx-toolbar" id="tx-toolbar" hidden>
         <div class="seg" id="tx-period">
@@ -136,9 +142,26 @@
       <div class="drawer-title" id="drawer-title"></div>
       <div class="drawer-sub" id="drawer-sub"></div>
     </div>
-    <button class="btn btn-ghost btn-icon" id="drawer-close" aria-label="Close">✕</button>
+    <div class="drawer-actions">
+      <button class="btn btn-primary" id="resolve-open" hidden>Resolve…</button>
+      <button class="btn btn-ghost btn-icon" id="drawer-close" aria-label="Close">✕</button>
+    </div>
   </header>
   <div class="thread" id="thread"></div>
+  <div class="resolve-box" id="resolve-box" hidden>
+    <div class="resolve-options" id="resolve-options">
+      <label><input type="radio" name="resolve" value="refund" checked> <b>Refund in full</b><small id="resolve-refund-text"></small></label>
+      <label><input type="radio" name="resolve" value="offer"> <b>Make an offer</b><small>Offer a partial refund; the customer accepts or declines</small></label>
+    </div>
+    <div class="resolve-fields">
+      <label data-for="offer" hidden>Offer amount (USD)<input id="resolve-amount" inputmode="decimal" placeholder="e.g. 20.00"></label>
+      <label>Note to the customer (optional)<input id="resolve-note" placeholder="Shown with the resolution"></label>
+    </div>
+    <div class="resolve-actions">
+      <button class="btn btn-ghost" id="resolve-cancel">Cancel</button>
+      <button class="btn btn-primary" id="resolve-confirm">Refund in full</button>
+    </div>
+  </div>
   <form class="drawer-composer" id="thread-form">
     <textarea id="thread-input" rows="2" maxlength="2000" placeholder="Write a message…"></textarea>
     <button class="btn btn-primary" type="submit" id="thread-send">Send</button>

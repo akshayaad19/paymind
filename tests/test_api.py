@@ -3,6 +3,7 @@
 Uses the real app database, executor and mock PayPal (in-process); the agent
 and tool search are fakes so no Gemini or Qdrant is needed."""
 
+import json
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -38,6 +39,14 @@ class FakeAgent:
     def answer(self, user_id, thread, approve):
         self.calls.append(("answer", user_id, thread, approve))
         return Reply("Done." if approve else "Cancelled.", None)
+
+    def stream(self, user_id, thread, text=None, approve=None):
+        reply = self.send(user_id, thread, text) if approve is None else self.answer(user_id, thread, approve)
+        if reply.text:
+            yield {"type": "restart"}
+            for word in reply.text.split(" "):
+                yield {"type": "token", "text": word + " "}
+        yield {"type": "done", "reply": reply.text, "confirmation": reply.confirmation, "receipt": None}
 
 
 
@@ -126,6 +135,39 @@ def test_role_comes_from_the_database_not_the_token(setup):
     assert client.get("/api/me", headers={"Authorization": f"Bearer {token}"}).json()["role"] == "customer"
 
 
+def test_logout_kills_the_token_and_any_copy(setup):
+    """Logout raises the user's token_version: a copy taken before logout is rejected too."""
+    client, _, _ = setup
+    headers = login(client, "asha")
+    copy = dict(headers)  # e.g. copied from dev tools
+    assert client.post("/api/auth/logout", headers=headers).json() == {"ok": True}
+    r = client.get("/api/me", headers=copy)
+    assert r.status_code == 401 and "logged out" in r.json()["detail"]
+    assert client.get("/api/me", headers=login(client, "asha")).status_code == 200  # a new login works
+
+
+def test_logout_only_affects_that_user(setup):
+    client, _, _ = setup
+    asha, rahul = login(client, "asha"), login(client, "rahul")
+    client.post("/api/auth/logout", headers=asha)
+    assert client.get("/api/me", headers=rahul).status_code == 200
+
+
+def test_password_change_revokes_old_tokens(setup):
+    client, _, services = setup
+    headers = login(client, "rahul")
+    services.appdb.set_password("u_rahul", "new-secret-1")
+    assert client.get("/api/me", headers=headers).status_code == 401
+
+
+def test_token_without_version_is_rejected(setup):
+    """Tokens from before versioning (no "ver") are refused, not treated as current."""
+    client, _, _ = setup
+    old_style = jwt.encode({"sub": "u_asha", "role": "accountant", "iss": "paymind", "iat": int(datetime.now(timezone.utc).timestamp()),
+                            "exp": int((datetime.now(timezone.utc) + timedelta(hours=1)).timestamp())}, SECRET, algorithm="HS256")
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {old_style}"}).status_code == 401
+
+
 # ---- role checks ---------------------------------------------------------------------------------
 
 def test_demo_reset_is_not_in_the_app(setup):
@@ -169,6 +211,30 @@ def test_chat_and_confirmation(setup):
     assert pending["reply"] is None and pending["confirmation"]["question"].startswith("Refund")
     done = client.post("/api/chat/confirm", json={"session_id": first["session_id"], "approve": True}, headers=asha).json()
     assert done["reply"] == "Done."
+
+
+def sse_events(response):
+    return [json.loads(line[6:]) for line in response.text.split("\n\n") if line.startswith("data: ")]
+
+
+def test_chat_streams_words_then_the_final_result(setup):
+    client, _, _ = setup
+    asha = login(client, "asha")
+    r = client.post("/api/chat/stream", json={"message": "hello there"}, headers=asha)
+    assert r.headers["content-type"].startswith("text/event-stream")
+    events = sse_events(r)
+    assert "".join(e["text"] for e in events if e["type"] == "token") == "echo: hello there "
+    done = events[-1]
+    assert done["type"] == "done" and done["reply"] == "echo: hello there" and done["session_id"]
+    pending = sse_events(client.post("/api/chat/stream", json={"message": "refund 5", "session_id": done["session_id"]}, headers=asha))
+    assert pending[-1]["confirmation"]["question"].startswith("Refund") and not [e for e in pending if e["type"] == "token"]
+    final = sse_events(client.post("/api/chat/confirm/stream", json={"session_id": done["session_id"], "approve": True}, headers=asha))
+    assert final[-1]["reply"] == "Done."
+
+
+def test_chat_stream_needs_login(setup):
+    client, _, _ = setup
+    assert client.post("/api/chat/stream", json={"message": "hi"}).status_code == 401
 
 
 def test_chat_threads_are_private_per_user(setup):
@@ -223,12 +289,15 @@ def test_transactions_for_a_month_with_totals(setup):
 
 
 def test_transactions_for_a_single_day(setup):
-    client, _, _ = setup
+    client, _, services = setup
     asha = login(client, "asha")
-    day = tx(client, asha, "2026-09-18T00:00:00+05:30", "2026-09-18T23:59:59+05:30").json()
-    assert all(row["transaction_info"]["transaction_initiation_date"].startswith(("2026-09-17T18", "2026-09-17T19", "2026-09-17T2", "2026-09-18"))
-               for row in day["transactions"])
-    assert any(row["transaction_info"]["transaction_event_code"] == "T1107" for row in day["transactions"])  # the 18 Sep refund
+    month = tx(client, asha, "2026-09-01T00:00:00+00:00", "2026-09-30T23:59:59+00:00").json()
+    refund_day = next(r["transaction_info"]["transaction_initiation_date"][:10] for r in month["transactions"]
+                      if r["transaction_info"]["transaction_event_code"] == "T1107")
+    day = tx(client, asha, f"{refund_day}T00:00:00+00:00", f"{refund_day}T23:59:59+00:00").json()
+    assert day["transactions"] and all(r["transaction_info"]["transaction_initiation_date"].startswith(refund_day) for r in day["transactions"])
+    assert any(r["transaction_info"]["transaction_event_code"] == "T1107" for r in day["transactions"])
+    assert day["totals"]["count"] < month["totals"]["count"]
 
 
 def test_transactions_rules(setup):
@@ -523,3 +592,57 @@ def test_order_steps_in_the_wrong_order_are_refused(setup):
     assert client.post(f"/api/pos/{pid}/ship", json={"carrier": "FedEx", "tracking_number": "1Z999"}, headers=asha).status_code == 409  # not paid
     assert client.post(f"/api/pos/{pid}/delivered", headers=rahul).status_code == 409                                                  # not shipped
     assert client.post(f"/api/invoices/{po['invoice_id']}/pay", headers=login(client, "priya")).status_code == 404                     # not hers
+
+
+# ---- resolving a dispute (shop) -------------------------------------------------------------------------
+
+def test_resolve_refund_clears_the_reminder(setup):
+    client, _, services = setup
+    asha = login(client, "asha")
+    rid = dispute_of(services, "user_123")
+    assert any(i.get("dispute_id") == rid for i in client.get("/api/whats-new", headers=asha).json()["items"])
+    assert client.get(f"/api/disputes/{rid}", headers=asha).json()["can_resolve"] is True
+    done = client.post(f"/api/disputes/{rid}/resolve", json={"action": "refund", "note": "Sorry!"}, headers=asha).json()
+    assert done["dispute"]["status"] == "RESOLVED" and done["can_resolve"] is False and done["can_reply"] is False
+    assert not any(i.get("dispute_id") == rid for i in client.get("/api/whats-new", headers=asha).json()["items"])
+    assert services.appdb.recent_actions("u_asha")[0]["tool"] == "accept_claim"
+    assert client.post(f"/api/disputes/{rid}/resolve", json={"action": "refund"}, headers=asha).status_code == 409
+
+
+def test_resolve_with_an_offer_moves_the_turn_to_the_customer(setup):
+    client, _, services = setup
+    asha, rahul = login(client, "asha"), login(client, "rahul")
+    rid = dispute_of(services, "user_123")
+    assert client.post(f"/api/disputes/{rid}/resolve", json={"action": "offer", "amount": "999"}, headers=asha).status_code == 422
+    res = client.post(f"/api/disputes/{rid}/resolve", json={"action": "offer", "amount": "20"}, headers=asha).json()
+    assert res["dispute"]["status"] == "WAITING_FOR_BUYER_RESPONSE" and res["offer"]["offer_amount"]["value"] == "20.00"
+    mine = {i["dispute_id"]: i for i in client.get("/api/whats-new", headers=asha).json()["items"] if i.get("dispute_id")}
+    assert rid not in mine or not mine[rid].get("action_needed")            # no longer the shop's turn
+    his = {i["dispute_id"]: i for i in client.get("/api/whats-new", headers=rahul).json()["items"] if i.get("dispute_id")}
+    assert his[rid].get("action_needed")                                    # now Rahul's turn
+
+
+def test_disputes_stay_between_shop_and_customer(setup):
+    """No PayPal review: 'send evidence' isn't a resolution, and the PayPal-review tools are switched off."""
+    client, _, services = setup
+    asha = login(client, "asha")
+    rid = dispute_of(services, "user_123")
+    assert client.post(f"/api/disputes/{rid}/resolve", json={"action": "evidence"}, headers=asha).status_code == 422
+    off = {"escalate_dispute_to_claim", "provide_evidence", "provide_supporting_information_for_dispute",
+           "appeal_dispute", "settle_dispute", "update_dispute_status"}
+    assert all(REGISTRY.get(n)["allowed_roles"] == [] and REGISTRY.get(n)["disabled"] for n in off)
+
+
+def test_only_the_shop_can_resolve(setup):
+    client, _, services = setup
+    rid = dispute_of(services, "user_123")
+    assert client.post(f"/api/disputes/{rid}/resolve", json={"action": "refund"}, headers=login(client, "rahul")).status_code == 403
+
+
+def test_customer_sees_the_shops_offer_in_whats_new(setup):
+    client, _, services = setup
+    asha, rahul = login(client, "asha"), login(client, "rahul")
+    rid = dispute_of(services, "user_123")
+    client.post(f"/api/disputes/{rid}/resolve", json={"action": "offer", "amount": "20", "note": "Sorry for the delay"}, headers=asha)
+    item = next(i for i in client.get("/api/whats-new", headers=rahul).json()["items"] if i.get("dispute_id") == rid)
+    assert item["action_needed"] and item["offer"]["amount"]["value"] == "20.00" and item["offer"]["note"] == "Sorry for the delay"

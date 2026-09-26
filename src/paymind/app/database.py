@@ -8,7 +8,9 @@ Tables:
   users      one row per person who can log in. role = accountant | customer.
              A customer is linked to their PayPal payer_id, so they only ever
              see their own records. Passwords are stored only as salted
-             scrypt hashes, never in plain text.
+             scrypt hashes, never in plain text. token_version is copied into
+             each login token; raising it (logout, password change) makes every
+             older token invalid, including copies someone else took.
   audit_log  one row per tool call the agent tries: who, which tool, the
              parameters, the outcome. System Search reads it to answer
              "what's the status of my last request?".
@@ -18,6 +20,9 @@ Tables:
              the customer; the shop can ship again). Or rejected.
   dispute_reads  how many messages of each dispute's thread each user has
              seen, so the page can flag new messages from the other side.
+  refund_requests  a customer formally asked the shop for a full refund on a
+             dispute (PayPal has no such record). Shown as "Refund requested"
+             until the shop refunds (dispute resolved) or makes an offer.
 
 Files (same pattern as the mock):
   data/app/initial.db  starting data: demo users (committed)
@@ -52,6 +57,7 @@ CREATE TABLE IF NOT EXISTS users (
     role        TEXT NOT NULL CHECK (role IN ('customer', 'accountant')),
     payer_id    TEXT,                       -- PayPal payer_id; required for customers
     password_hash TEXT,                     -- scrypt$salt$hash; NULL = can't log in
+    token_version INTEGER NOT NULL DEFAULT 1, -- tokens carrying an older version are rejected
     created_at  TEXT NOT NULL,
     CHECK (role = 'accountant' OR payer_id IS NOT NULL)
 );
@@ -106,6 +112,15 @@ CREATE TABLE IF NOT EXISTS dispute_reads (   -- how much of each dispute's threa
     last_read   TEXT NOT NULL,
     seen_count  INTEGER NOT NULL DEFAULT 0,  -- messages seen; threads only grow, so the rest are new
     PRIMARY KEY (user_id, dispute_id)
+);
+
+CREATE TABLE IF NOT EXISTS refund_requests (  -- a customer asked the shop for a full refund
+    dispute_id    TEXT PRIMARY KEY,
+    user_id       TEXT NOT NULL REFERENCES users(user_id),
+    amount        TEXT NOT NULL,             -- the disputed amount, e.g. "79.99"
+    currency_code TEXT NOT NULL,
+    message       TEXT NOT NULL,             -- what was sent to the shop with the request
+    requested_at  TEXT NOT NULL
 );
 """
 
@@ -163,6 +178,8 @@ class AppDatabase:
         columns = {r[1] for r in self.conn.execute("PRAGMA table_info(dispute_reads)")}
         if "seen_count" not in columns:  # databases created before this column existed
             self.conn.execute("ALTER TABLE dispute_reads ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0")
+        if "token_version" not in {r[1] for r in self.conn.execute("PRAGMA table_info(users)")}:
+            self.conn.execute("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 1")
 
     def _upgrade_purchase_orders(self) -> None:
         """Databases made before delivery tracking have fewer statuses and columns: rebuild, keeping the rows."""
@@ -196,8 +213,23 @@ class AppDatabase:
         return User(user_id, name, email.lower(), role, payer_id)
 
     def set_password(self, user_id: str, password: str) -> None:
+        """New password; tokens issued before the change stop working."""
         with self.conn:
-            self.conn.execute("UPDATE users SET password_hash = ? WHERE user_id = ?", (hash_password(password), user_id))
+            self.conn.execute("UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE user_id = ?",
+                              (hash_password(password), user_id))
+
+    def user_for_token(self, user_id: str) -> tuple[User, int] | None:
+        """The user a token names, plus their current token_version (one lookup per request)."""
+        row = self.conn.execute("SELECT user_id, name, email, role, payer_id, token_version FROM users WHERE user_id = ?",
+                                (user_id,)).fetchone()
+        if row is None:
+            return None
+        return User(row["user_id"], row["name"], row["email"], row["role"], row["payer_id"]), row["token_version"]
+
+    def revoke_tokens(self, user_id: str) -> None:
+        """Log out everywhere: every token issued so far (and any copy of it) is rejected from now on."""
+        with self.conn:
+            self.conn.execute("UPDATE users SET token_version = token_version + 1 WHERE user_id = ?", (user_id,))
 
     def authenticate(self, email: str, password: str) -> User | None:
         """The user if email + password match, else None. Same work either way (no timing hint)."""
@@ -275,6 +307,21 @@ class AppDatabase:
     def dispute_reads(self, user_id: str) -> dict[str, int]:
         """dispute_id -> number of messages this user has seen."""
         return dict(self.conn.execute("SELECT dispute_id, seen_count FROM dispute_reads WHERE user_id = ?", (user_id,)).fetchall())
+
+    # ---- refund requests ----------------------------------------------------------
+
+    def request_refund(self, user_id: str, dispute_id: str, amount: dict, message: str) -> dict:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO refund_requests (dispute_id, user_id, amount, currency_code, message, requested_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)", (dispute_id, user_id, amount["value"], amount["currency_code"], message, now_iso()))
+        return self.refund_requests()[dispute_id]
+
+    def refund_requests(self) -> dict[str, dict]:
+        """dispute_id -> the customer's refund request."""
+        rows = self.conn.execute("SELECT * FROM refund_requests").fetchall()
+        return {r["dispute_id"]: {"amount": {"currency_code": r["currency_code"], "value": r["amount"]},
+                                  "message": r["message"], "time": r["requested_at"], "user_id": r["user_id"]} for r in rows}
 
     # ---- audit log ---------------------------------------------------------------
 

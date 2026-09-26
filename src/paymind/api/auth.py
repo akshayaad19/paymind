@@ -7,10 +7,13 @@ Flow:
   3. The server verifies the signature and expiry, then loads the user from
      the database. The role used for permissions comes from the DATABASE, not
      from the token, so a changed or removed user loses access immediately.
+  4. POST /api/auth/logout raises the user's token_version in the database.
+     Every token carries the version it was issued with (ver), so all older
+     tokens are rejected from then on, including copies someone else took.
 
 Token contents (signed with HS256 and JWT_SECRET from .env, not encrypted:
 anyone holding it can read it, nobody can change it without the secret):
-  sub (user_id), role, name, iat (issued at), exp (expires), iss ("paymind")
+  sub (user_id), role, name, ver (token version), iat (issued at), exp (expires), iss ("paymind")
 """
 
 from __future__ import annotations
@@ -39,12 +42,14 @@ def secret_key() -> str:
     return key
 
 
-def create_token(user: User, secret: str, ttl: timedelta = TOKEN_TTL, now: datetime | None = None) -> str:
+def create_token(user: User, secret: str, ttl: timedelta = TOKEN_TTL, now: datetime | None = None,
+                 version: int = 1) -> str:
     now = now or datetime.now(timezone.utc)
     payload = {
         "sub": user.user_id,
         "role": user.role,
         "name": user.name,
+        "ver": version,
         "iss": ISSUER,
         "iat": int(now.timestamp()),
         "exp": int((now + ttl).timestamp()),
@@ -55,7 +60,7 @@ def create_token(user: User, secret: str, ttl: timedelta = TOKEN_TTL, now: datet
 def decode_token(token: str, secret: str) -> dict:
     """Raises jwt.InvalidTokenError (bad signature, expired, wrong issuer, missing claims)."""
     return jwt.decode(token, secret, algorithms=[ALGORITHM], issuer=ISSUER,
-                      options={"require": ["sub", "exp", "iat", "iss"]})
+                      options={"require": ["sub", "ver", "exp", "iat", "iss"]})
 
 
 def unauthorized(detail: str) -> HTTPException:
@@ -73,9 +78,12 @@ def current_user(request: Request, creds: HTTPAuthorizationCredentials | None = 
     except jwt.InvalidTokenError:
         raise unauthorized("Invalid token.")
     appdb: AppDatabase = request.app.state.services.appdb
-    user = appdb.get_user(claims["sub"])
-    if user is None:
+    found = appdb.user_for_token(claims["sub"])
+    if found is None:
         raise unauthorized("This account no longer exists.")
+    user, version = found
+    if claims["ver"] != version:  # logged out (or password changed) since this token was issued
+        raise unauthorized("You were logged out. Please log in again.")
     return user
 
 

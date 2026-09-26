@@ -418,12 +418,12 @@ data/mock/paypal_mock.db   working database the server reads and writes (git-ign
 | Table | Rows in `initial.db` | What |
 |---|---|---|
 | `customers` | 6 | including **user_123** (Rahul Sharma) and **john@x.com** |
-| `captures` | 47 | payments from mid-July to 23 Sep 2026 |
+| `captures` | 52 | payments from mid-July to 25 Sep 2026 (sales, invoice payments, disputed payments). Priya's double charge is built in: INV-1005 paid at 09:16 on 20 Sep, then the same $29.99 charged again at 09:18 (the payment she disputes) |
 | `refunds` | 4 | two older (Aug) and two recent (Sep): a full and a partial refund each time |
 | `invoices` | 8 | 2 draft, 3 sent (one overdue), 2 paid, 1 cancelled |
-| `disputes` | 4 | **user_123, $40, waiting for our response**; one under PayPal review; one waiting for the buyer to answer our offer; one resolved |
+| `disputes` | 4 | All between the shop and a customer: **Rahul (user_123), $79.99, item not received**, and **Priya, $29.99, charged twice**, both waiting for the shop; **Wei Chen, $59**, waiting for him to answer a $30 offer; Emma's, resolved |
 | `orders` | 2 | one created, one completed |
-| `transactions` | 51 | the ledger behind transaction search and the balance (47 sales, 4 refunds) |
+| `transactions` | 56 | the ledger behind transaction search and the balance (52 payments, 4 refunds). Each sale says how it was paid, using PayPal's own fields: `invoice_id` = paid an invoice, `store_info` (store + till) = paid in the shop, neither = online store checkout. The Transactions table shows this as **Paid how** |
 | `meta` | | merchant details, starting balance, next invoice number |
 | `idempotency` | | remembered answers for `PayPal-Request-Id` retries |
 
@@ -578,11 +578,15 @@ search_tools ─► agent (Gemini) ──tool calls?── no ──► reply
 | Step | What it does |
 |---|---|
 | `search_tools` | Hybrid search (step 3) with the user's role → top 5 tools. Short follow-ups ("refund the first one") are searched together with the previous message |
-| `agent` | Gemini sees the offered tools + `find_tools` + `system_search`, and either answers or calls tools. Max **6** steps per message |
+| `agent` | Gemini sees the offered tools + `find_tools` + `system_search`, and either answers or calls tools. Max **8** steps per message; if it runs out, the reply says what was actually done (from the same record as the receipt) |
 | `gate` | Runs the validator (5c) and the customer scope check on every call; for writes, **pauses** with LangGraph `interrupt()` and asks yes/no |
 | `tools` | Runs what the gate allowed through the executor (5b), filters list results for customers, writes the audit log (5a), and returns results to the agent |
 
 **Why a separate gate:** when LangGraph resumes after a pause, it re-runs the paused step from the start. The gate only checks and asks, and execution happens in the next step, so an action is **never run twice**. Each write also carries a `PayPal-Request-Id` built from its tool-call ID, so even a repeat would be replayed by PayPal.
+
+**Streaming answers:** the chat uses `POST /api/chat/stream` (and `/api/chat/confirm/stream`), which run the same graph with LangGraph's `stream_mode="messages"` and send **Server-Sent Events**: `token` events carry the answer's words as Gemini writes them (only text from the `agent` node; tool calls and results are never streamed), `restart` clears the bubble when a new LLM answer begins (after a tool ran, or when a fallback model takes over), and a final `done` event carries the full reply, the confirmation (if the run paused for a yes/no) and the receipt, read from the saved state. The page types the words in as they arrive and then swaps in the final result. The plain `/api/chat` endpoints still exist for the terminal chat and tests.
+
+**Receipt under every reply:** the model can stop early or claim something it didn't do ("I've refunded Rahul" when it only listed disputes). Validation and confirmation stop it from doing *more* than approved, and the audit log and traces show the truth afterwards, but only if someone looks. So each reply also carries a receipt built **by code from what the `tools` step actually ran**: `✅ Done: Refund captured payment (79.99 USD)`, `❌ Failed`, `🚫 Cancelled by you`, `⛔ Not allowed`, or `No changes were made · 1 lookup`. The user sees at once whether anything changed, whatever the model's wording. The prompt also tells the model to finish every part of a request and never claim an action whose tool didn't succeed.
 
 **Built-in tools** (always offered):
 - `find_tools(query)`: search the whole catalog when the offered tools don't fit; found tools can be called in the next step.
@@ -623,7 +627,8 @@ The agent then sees each offered tool's *"Required: …"* and *"Example call: {�
 ```
 Browser                                    PayMind API (FastAPI, port 8001)
   POST /api/auth/login  email + password ──► scrypt hash check → JWT (HS256, 8 h)
-  every request: Authorization: Bearer … ──► verify signature + expiry → load user → check role
+  every request: Authorization: Bearer … ──► verify signature + expiry → load user → token version current? → check role
+  POST /api/auth/logout ──────────────────► token_version + 1 → this token and every copy stop working
                                               ├── POST /api/chat, /api/chat/confirm → agent (5d)
                                               ├── GET  /api/paypal/overview         → account data, scoped by role
                                               ├── GET  /api/paypal/transactions     → accountants: a day / week / month, with totals
@@ -635,12 +640,13 @@ Browser                                    PayMind API (FastAPI, port 8001)
 | | How |
 |---|---|
 | Passwords | Stored only as salted **scrypt** hashes (`users.password_hash`). A wrong email and a wrong password look identical and take the same time |
-| Token | **JWT** signed with `JWT_SECRET` from `.env`: `sub` (user), `role`, `name`, `iat`, `exp` (8 h), `iss`. Kept **only in page memory** (never in browser storage): refreshing or closing the page logs you out, so users log in every time. The 8-hour expiry still caps how long a token works |
+| Token | **JWT** signed with `JWT_SECRET` from `.env`: `sub` (user), `role`, `name`, `ver` (token version), `iat`, `exp` (8 h), `iss`. Kept **only in page memory** (never in browser storage): refreshing or closing the page logs you out, so users log in every time. The 8-hour expiry still caps how long a token works |
 | Every request | Signature and expiry verified; the **role is read from the database**, not trusted from the token |
+| Logout | Raises `users.token_version`. Tokens carry the version they were issued with, so every older token is rejected, **including a copy someone took** (from dev tools, say). Changing a password does the same. Still stateless: no tokens are stored, just one number per user, checked on the lookup every request already does |
 | Role checks | Enforced on the server: customers get only their own disputes/invoices and no balance or transactions |
 | Chat privacy | Conversations are stored per user (`<user_id>__<session>`), so the same session id from two users is two separate chats |
 
-Tested: login, wrong password, no token, expired token, **forged token** (signed with another key), role-from-database, customer scoping, private chat threads, and that developer-only features (tool search, health, demo reset) are not reachable from the app.
+Tested: login, wrong password, no token, expired token, **forged token** (signed with another key), **logout revokes copies**, password change revokes old tokens, role-from-database, customer scoping, private chat threads, and that developer-only features (tool search, health, demo reset) are not reachable from the app.
 
 **Demo logins**
 
@@ -688,6 +694,10 @@ On the delivery date the customer is asked "Has it arrived?" → Delivered, or N
 - Steps in the wrong order are refused (e.g. shipping before payment), and each step is in the audit log.
 - The assistant's `order_status` tool answers "where is my order?" / "which orders do I need to ship?", and `check_updates` includes every PO reminder.
 - Tested live: a generated handwritten PO photo was read correctly (PO number, all three items, the missing price left blank, needed-by date, delivery note), then taken all the way to Delivered.
+
+**Disputes are between the shop and the customer only.** PayMind is the seller's portal: there's no PayPal review. The shop resolves a dispute with **Resolve…** in the dispute panel: **Refund in full** (the dispute closes) or **Make an offer** (a partial refund the customer accepts or declines by telling the assistant in chat). PayPal's review tools (escalate to a claim, send evidence to PayPal, appeal, and PayPal's sandbox settle/status tools) are **switched off** in `tools.json` (`"disabled": true`, no allowed roles), so search never offers them and the validator blocks them for everyone.
+
+**Refund requests:** when a customer asks the shop for their money back, the agent uses the customer-only `request_refund` tool (confirmed like any write): it sends the message **and** records the request in `refund_requests` (app DB; PayPal has no such record). Both sides then see **Refund requested** on the dispute, a line at the top of the thread says who asked and when, and the shop's What's new shows *"💸 Rahul asked for a full refund · Resolve"*. It clears by itself once it's no longer the shop's turn: refunding resolves the dispute, and an offer hands the turn to the customer.
 
 **Dispute conversations.** Each dispute has a message thread between the customer and the shop (PayPal's own dispute messages, not a separate chat system):
 - **PayMind data → Disputes**: statuses and reasons in plain words from the viewer's side (the shop sees *"Needs your response"* where the customer sees *"Waiting for the shop"*), and an **"N new"** label for unread messages from the other side. Click a dispute to open the conversation panel and reply; resolved disputes are read-only.

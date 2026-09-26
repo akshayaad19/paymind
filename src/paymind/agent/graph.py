@@ -1,12 +1,16 @@
 """The PayMind agent: a LangGraph loop that connects search, the LLM, the
 validator, customer scope, the executor and the audit log.
 
-    search_tools ─► agent (LLM) ──tool calls?── no ──► reply
+    search_tools ─► agent (LLM) ──tool calls?── no ──► reply + receipt
                        ▲               │ yes
                        │               ▼
                        │            gate   validate · customer scope · ⏸ ask yes/no
                        │               ▼
-                       └── results ─ tools  run approved calls · filter · audit log
+                       └── results ─ tools  run approved calls · filter · audit log · record for the receipt
+
+The receipt under each reply is built by code from what the tools step actually
+ran, not from the LLM's words: if the model says "refunded" but no refund ran,
+the user still sees "No changes were made".
 
 Why a separate gate: when LangGraph resumes after a pause it re-runs the
 paused step from the start. The gate only checks and asks (nothing it does
@@ -24,7 +28,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Annotated, Any, Callable, TypedDict
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.types import Command, interrupt
@@ -32,10 +36,11 @@ from langgraph.types import Command, interrupt
 from ..app.database import AppDatabase, User
 from .executor import Executor, ToolRegistry
 from .scope import check_access, filter_results
-from .tools import BUILTIN_SCHEMAS, BUILTINS, CHECK_UPDATES, FIND_TOOLS, ORDER_STATUS, RAG_SEARCH, SYSTEM_SEARCH, tool_schema
-from .validator import validate
+from .tools import (BUILTIN_SCHEMAS, BUILTINS, CHECK_UPDATES, CUSTOMER_ONLY, FIND_TOOLS, ORDER_STATUS, RAG_SEARCH,
+                    REQUEST_REFUND, SYSTEM_SEARCH, tool_schema)
+from .validator import money_values, validate
 
-MAX_STEPS = 6          # LLM turns per user message
+MAX_STEPS = 8          # LLM turns per user message
 LLM_WAITS = (3.0, 8.0) # extra tries when every model is busy (seconds to wait before each)
 LLM_DOWN = ("I can't reach the AI model right now (the provider is busy or out of quota), so nothing was done. "
             "Please try again in a few minutes.")
@@ -57,6 +62,7 @@ class AgentState(TypedDict, total=False):
     seen: str                          # user text + tool results: what grounding checks against
     steps: int
     decisions: dict[str, dict]         # tool_call_id -> gate decision
+    actions: list[dict]                # PayPal calls that ran (or were stopped) for this message: the receipt
 
 
 @dataclass
@@ -88,10 +94,15 @@ Rules:
 - Money is always an object: {{"currency_code": "USD", "value": "50.00"}}. Date-times are ISO 8601 UTC, e.g. 2026-08-01T00:00:00Z. Transaction search covers at most 31 days per call.
 - Tools that change data are confirmed with the user automatically. Just call them; don't ask "are you sure?" yourself.
 - If a tool returns an error, read it, fix the call and try once more. If it still fails, explain plainly.
+- Do every part of the user's request before answering. Never say an action happened (sent, refunded, paid, created) unless its tool succeeded; if something is left undone, say what and why.
 - The tools you were given were already chosen for this request. Call them directly, following each tool's example call; don't browse existing records or templates just to learn a format.
 - For 'anything new?' or 'any messages?', call check_updates. It returns new_message (they wrote, unread), needs_reply (they wrote, user hasn't answered), action_needed (PayPal says it's the user's turn, with a response deadline: always mention days left or overdue) and no_reply_yet (user wrote days ago, no answer; offer to send a reminder). Always say how long ago things happened (e.g. '2 days ago'), using today's date. When you show a dispute's messages, say who wrote each one.
+- check_updates also lists overdue or soon-due invoices: always mention them, with the amount and how many days overdue or left.
 - For purchase orders ('where is my order?', tracking, delivery date, orders to ship), call order_status. Customers confirm delivery or report a missing order on the Orders tab.
 - Questions about rules, policies, time limits or fees: call rag_search and answer ONLY from the passages it returns, citing the source in brackets, e.g. (Refunds and returns › Return window). Say whether it's the shop's policy or PayPal's. If it finds nothing relevant, say you couldn't find it in the policies; never answer policy questions from memory.
+- Shop refunding a customer who has an open dispute on that payment: use accept_claim on the dispute (refunds in full and closes it); for less than the full amount, make_offer_to_resolve_dispute. Use refund_captured_payment only for payments with no dispute.
+- When a customer asks the shop for a refund (their money back) on a dispute, use request_refund with a short polite message giving the reason; not a plain message. The customer confirms before it's sent.
+- When the shop has made the customer an offer (check_updates shows it), explain it plainly: the amount and what accepting or declining means. Accept or decline only when the customer clearly asks, using the dispute tools; the customer confirms before anything is sent.
 - If none of your tools fits, call find_tools. For "what can you do" or "status of my last request", call system_search.
 - For totals, add up the amounts yourself and state the number.
 - Messages to the other side of a dispute: if asked to write, word or format one, write it clearly and politely in the user's name (greeting, the facts they gave, a friendly close) and send it with the messaging tool; the user sees the exact text and approves it before it's sent. If they only ask for a draft, show the draft and don't send.
@@ -138,18 +149,22 @@ def build_graph(deps: Deps, checkpointer=None):
             "seen": state.get("seen", "") + "\nuser: " + str(latest),
             "steps": 0,
             "decisions": {},
+            "actions": [],
         }
 
     # ---- agent: the LLM decides what to do next ---------------------------------------
     def agent(state: AgentState, config) -> dict:
         user = user_of(config, deps.appdb)
         steps = state.get("steps", 0) + 1
-        if steps > MAX_STEPS:
+        if steps > MAX_STEPS:  # say what was really done (from the same record as the receipt), not a guess
+            done = [f"{RECEIPT_MARKS[a['outcome']]}: {a['label']}" for a in state.get("actions", []) if a["write"]]
+            summary = ("So far: " + "; ".join(done) + ".") if done else "Nothing was changed."
             return {"steps": steps, "messages": [AIMessage(
-                "I stopped after several steps without finishing. Here's where things stand above; "
-                "please tell me how you'd like to continue.")]}
+                f"I reached my step limit before finishing my answer. {summary} "
+                "Tell me if anything else is needed.")]}
         schemas = [tool_schema(deps.registry.get(n)) for n in state.get("offered", []) if deps.registry.get(n)]
-        llm = deps.llm_for(schemas + BUILTIN_SCHEMAS)
+        builtins = [b for b in BUILTIN_SCHEMAS if user.is_customer or b["name"] not in CUSTOMER_ONLY]
+        llm = deps.llm_for(schemas + builtins)
         prompt = [SystemMessage(system_prompt(user)), *state["messages"]]
         for wait in (0.0, *deps.llm_waits):
             if wait:
@@ -172,6 +187,9 @@ def build_graph(deps: Deps, checkpointer=None):
         decisions: dict[str, dict] = {}
         for call in state["messages"][-1].tool_calls:
             name, args = call["name"], call.get("args") or {}
+            if name == REQUEST_REFUND:
+                decisions[call["id"]] = refund_request_decision(user, args)
+                continue
             if name in BUILTINS:
                 decisions[call["id"]] = {"outcome": "ok", "params": args}
                 continue
@@ -186,6 +204,44 @@ def build_graph(deps: Deps, checkpointer=None):
                 decision["approved"] = str(answer).strip().lower() in YES
             decisions[call["id"]] = decision
         return {"decisions": decisions}
+
+    def refund_request_decision(user: User, args: dict) -> dict:
+        """request_refund is a write: customers only, on their own open dispute, confirmed by the user."""
+        dispute_id, message = str(args.get("dispute_id") or "").strip(), str(args.get("message") or "").strip()
+        params = {"dispute_id": dispute_id, "message": message}
+        if not user.is_customer:
+            return {"outcome": "blocked", "params": params, "errors": ["only customers can request a refund"]}
+        if not dispute_id or not message:
+            return {"outcome": "invalid", "params": params, "errors": ["dispute_id and message are both required"]}
+        found = deps.executor.execute("show_dispute_details", {"dispute_id": dispute_id}, caller=user)
+        if not found.ok:
+            return {"outcome": "invalid", "params": params, "errors": [f"no dispute {dispute_id}: look it up with list_disputes first"]}
+        if check_access(user, params, deps.executor):
+            return {"outcome": "blocked", "params": params, "errors": [f"dispute {dispute_id} does not belong to this customer"]}
+        if found.body.get("status") == "RESOLVED":
+            return {"outcome": "invalid", "params": params, "errors": ["this dispute is already resolved"]}
+        amount = found.body["dispute_amount"]
+        params["amount"] = amount
+        answer = interrupt({"question": f"Ask the shop for a full refund of {amount['value']} {amount['currency_code']} "
+                                        f"(dispute_id={dispute_id})?\n\n“{message[:600]}”",
+                            "tool": REQUEST_REFUND, "params": params, "large_amount": False})
+        return {"outcome": "needs_confirmation", "params": params, "approved": str(answer).strip().lower() in YES}
+
+    def run_refund_request(user: User, params: dict, session_id: str | None, cid: str) -> tuple[str, bool]:
+        """Send the message to the shop, then record the request. Returns (result for the LLM, ok)."""
+        send = {"dispute_id": params["dispute_id"], "message": params["message"]}
+        result = deps.executor.execute("send_message_about_dispute_to_other_party", send,
+                                       request_id=f"pm-{session_id}-{cid}", caller=user)
+        card = deps.registry.get("send_message_about_dispute_to_other_party") or {}
+        deps.appdb.log_action(user, REQUEST_REFUND, params, "success" if result.ok else "failed", session_id=session_id,
+                              method=card.get("method"), path=card.get("path"), http_status=result.status_code,
+                              result_summary=(result.error or f"refund requested on {params['dispute_id']}")[:300],
+                              confirmed=True, request_id=result.request_id)
+        if not result.ok:
+            return compact({"ok": False, "error": result.error}), False
+        deps.appdb.request_refund(user.user_id, params["dispute_id"], params["amount"], params["message"])
+        return compact({"ok": True, "result": "Refund request sent to the shop. The dispute now shows 'Refund requested' "
+                                              "until the shop refunds or makes an offer."}), True
 
     # ---- tools: run what the gate allowed ----------------------------------------------------
     def run_builtin(name: str, args: dict, user: User, state: AgentState) -> tuple[str, list[str]]:
@@ -230,6 +286,7 @@ def build_graph(deps: Deps, checkpointer=None):
         session_id = config["configurable"].get("thread_id")
         offered = list(state.get("offered", []))
         seen = state.get("seen", "")
+        actions = list(state.get("actions", []))
         messages = []
         for call in state["messages"][-1].tool_calls:
             name, cid = call["name"], call["id"]
@@ -238,17 +295,36 @@ def build_graph(deps: Deps, checkpointer=None):
             card = deps.registry.get(name) or {}
             audit = dict(session_id=session_id, method=card.get("method"), path=card.get("path"))
 
-            if name in BUILTINS:
+            action = {"tool": name, "label": action_label(card, name, params), "write": card.get("action_type") == "write"}
+            if name == REQUEST_REFUND:
+                action = {"tool": name, "label": action_label({"title": "Request refund"}, name, params), "write": True}
+            if name == REQUEST_REFUND and decision["outcome"] == "needs_confirmation" and decision.get("approved"):
+                content, ok = run_refund_request(user, params, session_id, cid)
+                actions.append(action | ({"outcome": "done"} if ok else {"outcome": "failed", "error": "PayPal refused the message"}))
+            elif name == REQUEST_REFUND and decision["outcome"] == "needs_confirmation":
+                content = "The user declined, so nothing was done. Tell them it was cancelled; don't retry."
+                deps.appdb.log_action(user, name, params, "declined", **audit)
+                actions.append(action | {"outcome": "declined"})
+            elif name == REQUEST_REFUND and decision["outcome"] == "blocked":
+                content = "Not allowed: " + "; ".join(decision["errors"]) + ". Tell the user plainly; don't retry."
+                deps.appdb.log_action(user, name, params, "blocked", result_summary=content, **audit)
+                actions.append(action | {"outcome": "blocked"})
+            elif name == REQUEST_REFUND:
+                content = "Not run. Fix these problems and try again: " + "; ".join(decision["errors"])
+            elif name in BUILTINS:
                 content, new_tools = run_builtin(name, params, user, state)
                 offered += [t for t in new_tools if t not in offered]
-            elif decision["outcome"] == "invalid":
+                actions.append(action | {"write": False, "outcome": "done"})
+            elif decision["outcome"] == "invalid":  # sent back to the LLM to fix; not an action yet
                 content = "Not run. Fix these problems and try again: " + "; ".join(decision["errors"])
             elif decision["outcome"] == "blocked":
                 content = "Not allowed: " + "; ".join(decision["errors"]) + ". Tell the user plainly; don't retry."
                 deps.appdb.log_action(user, name, params, "blocked", result_summary=content, **audit)
+                actions.append(action | {"outcome": "blocked"})
             elif decision["outcome"] == "needs_confirmation" and not decision.get("approved"):
                 content = "The user declined, so nothing was done. Tell them it was cancelled; don't retry."
                 deps.appdb.log_action(user, name, params, "declined", **audit)
+                actions.append(action | {"outcome": "declined"})
             else:
                 result = deps.executor.execute(name, params, request_id=f"pm-{session_id}-{cid}", caller=user)
                 body = filter_results(user, name, result.body)
@@ -262,9 +338,10 @@ def build_graph(deps: Deps, checkpointer=None):
                     user, name, params, "success" if result.ok else "failed", http_status=result.status_code,
                     result_summary=(result.error or f"{result.method} {result.path} -> {result.status_code}")[:300],
                     confirmed=decision["outcome"] == "needs_confirmation", request_id=result.request_id, **audit)
+                actions.append(action | ({"outcome": "done"} if result.ok else {"outcome": "failed", "error": result.error}))
             seen += f"\ntool {name}: {content}"
             messages.append(ToolMessage(content=content, tool_call_id=cid, name=name))
-        return {"messages": messages, "offered": offered[:MAX_OFFERED + 5], "seen": seen, "decisions": {}}
+        return {"messages": messages, "offered": offered[:MAX_OFFERED + 5], "seen": seen, "decisions": {}, "actions": actions}
 
     graph = StateGraph(AgentState)
     graph.add_node("search_tools", search_tools)
@@ -279,12 +356,38 @@ def build_graph(deps: Deps, checkpointer=None):
     return graph.compile(checkpointer=checkpointer)
 
 
+# ---- the receipt: what really happened, from code ----------------------------------------------
+
+def action_label(card: dict, name: str, params: dict) -> str:
+    """Short plain name for an action, e.g. "Refund captured payment (79.99 USD)"."""
+    label = card.get("title") or name.replace("_", " ").capitalize()
+    amounts = ", ".join(f"{m['value']} {m['currency_code']}" for _, m in money_values(params or {}))
+    return f"{label} ({amounts})" if amounts else label
+
+
+RECEIPT_MARKS = {"done": "✅ Done", "failed": "❌ Failed", "declined": "🚫 Cancelled by you", "blocked": "⛔ Not allowed"}
+
+
+def receipt(actions: list[dict]) -> dict:
+    """What changed during one message. Reads only count as lookups; every write is listed with its outcome."""
+    changes = [{"label": a["label"], "outcome": a["outcome"], **({"error": a["error"]} if a.get("error") else {})}
+               for a in actions if a["write"]]
+    lookups = sum(1 for a in actions if not a["write"] and a["outcome"] == "done")
+    lines = [f"{RECEIPT_MARKS[c['outcome']]}: {c['label']}" for c in changes]
+    if not any(c["outcome"] == "done" for c in changes):
+        lines.append("No changes were made")
+    if lookups:
+        lines.append(f"{lookups} lookup{'s' if lookups != 1 else ''}")
+    return {"changes": changes, "lookups": lookups, "summary": " · ".join(lines)}
+
+
 # ---- a small wrapper for chat screens -----------------------------------------------------
 
 @dataclass
 class Reply:
     text: str | None                 # the assistant's answer (None while waiting for a yes/no)
     confirmation: dict | None        # {"question", "tool", "params", "large_amount"} when waiting
+    receipt: dict | None = None      # what really ran for this message (see receipt()); None while waiting
 
 
 class PayMindAgent:
@@ -306,7 +409,7 @@ class PayMindAgent:
         last = result["messages"][-1]
         text = last.content if isinstance(last.content, str) else " ".join(
             p.get("text", "") for p in last.content if isinstance(p, dict))
-        return Reply(text, None)
+        return Reply(text, None, receipt(result.get("actions", [])))
 
     def send(self, user_id: str, session_id: str, text: str) -> Reply:
         return self._reply(self.graph.invoke({"messages": [HumanMessage(text)]}, self._config(user_id, session_id)))
@@ -314,3 +417,39 @@ class PayMindAgent:
     def answer(self, user_id: str, session_id: str, approve: bool) -> Reply:
         """Answer a pending yes/no confirmation."""
         return self._reply(self.graph.invoke(Command(resume="yes" if approve else "no"), self._config(user_id, session_id)))
+
+    # ---- streaming: the answer's words as Gemini writes them ----------------------------------
+
+    def stream(self, user_id: str, session_id: str, text: str | None = None, approve: bool | None = None):
+        """Same run as send()/answer(), but yields events while it runs:
+
+          {"type": "token", "text": ...}   a piece of the answer, as Gemini writes it
+          {"type": "restart"}              a new LLM answer began (e.g. after a tool ran, or a fallback
+                                           model took over): the page clears what it showed so far
+          {"type": "done", "reply", "confirmation", "receipt"}   the final result, exactly as send() returns it
+
+        Only text written by the agent node is streamed; tool calls, tool results and the pause for a
+        yes/no are not. The final "done" event is the source of truth (the page replaces the streamed
+        text with it).
+        """
+        config = self._config(user_id, session_id)
+        run_input = {"messages": [HumanMessage(text)]} if approve is None else Command(resume="yes" if approve else "no")
+        current = None
+        for chunk, meta in self.graph.stream(run_input, config, stream_mode="messages"):
+            if meta.get("langgraph_node") != "agent" or not isinstance(chunk, (AIMessageChunk, AIMessage)):
+                continue
+            piece = chunk.content if isinstance(chunk.content, str) else "".join(
+                p.get("text", "") for p in chunk.content if isinstance(p, dict) and p.get("type", "text") == "text")
+            if not piece:
+                continue
+            if chunk.id != current:
+                current = chunk.id
+                yield {"type": "restart"}
+            yield {"type": "token", "text": piece}
+        snapshot = self.graph.get_state(config)
+        pending = [i for task in snapshot.tasks for i in task.interrupts]
+        if pending:
+            reply = Reply(None, pending[0].value)
+        else:
+            reply = self._reply(snapshot.values)
+        yield {"type": "done", "reply": reply.text, "confirmation": reply.confirmation, "receipt": reply.receipt}

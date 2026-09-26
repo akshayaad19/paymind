@@ -15,7 +15,9 @@ SYSTEM_SEARCH = "system_search"
 CHECK_UPDATES = "check_updates"
 ORDER_STATUS = "order_status"
 RAG_SEARCH = "rag_search"
-BUILTINS = (FIND_TOOLS, SYSTEM_SEARCH, CHECK_UPDATES, ORDER_STATUS, RAG_SEARCH)
+REQUEST_REFUND = "request_refund"
+BUILTINS = (FIND_TOOLS, SYSTEM_SEARCH, CHECK_UPDATES, ORDER_STATUS, RAG_SEARCH, REQUEST_REFUND)
+CUSTOMER_ONLY = {REQUEST_REFUND}
 
 BUILTIN_SCHEMAS = [
     {
@@ -52,7 +54,7 @@ BUILTIN_SCHEMAS = [
         "description": (
             "What needs this user's attention on open disputes: new_message (the other side wrote and it's unread), "
             "needs_reply (they wrote, no answer yet from this user) and no_reply_yet (this user wrote days ago and "
-            "is still waiting); plus purchase orders: new_po (shop: a customer sent a PO) and po_accepted / "
+            "is still waiting); unpaid invoices (invoice_overdue, invoice_due: number, amount, due date, days left); plus purchase orders: new_po (shop: a customer sent a PO) and po_accepted / "
             "po_rejected (customer: the shop's decision, with expected delivery date). Each item has its text and time. Use it for 'anything new?', "
             "'any messages?', 'did the shop reply?'. Listing here doesn't mark messages as read; opening a "
             "dispute with show_dispute_details does."
@@ -88,6 +90,23 @@ BUILTIN_SCHEMAS = [
                 "limit": {"type": "integer", "description": "For activity: how many past requests (default 5)."},
             },
             "required": ["mode"],
+        },
+    },
+    {
+        "name": REQUEST_REFUND,
+        "description": (
+            "Customers only: formally ask the shop for a full refund on one of the customer's open disputes. "
+            "Sends the message to the shop and marks the dispute 'Refund requested' for both sides until the "
+            "shop refunds or makes an offer. Use this (not a plain message) whenever the customer asks the shop "
+            "for their money back. (Changes data; the user is asked to confirm automatically.)"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "dispute_id": {"type": "string", "description": "The customer's dispute, e.g. PP-D-38106 (look it up first)."},
+                "message": {"type": "string", "description": "A short, polite message to the shop in the customer's name, with the reason."},
+            },
+            "required": ["dispute_id", "message"],
         },
     },
 ]
