@@ -132,6 +132,19 @@ def buyer_closes(store: Store, dispute_id: str, body: dict) -> dict:
     return update(store, dispute, "RESOLVED", "RESOLVED")
 
 
+def buyer_reopens(store: Store, dispute_id: str, body: dict) -> dict:
+    """The shop acted (replacement / refund) but the customer says it didn't arrive: the turn goes
+    back to the shop, with what it did kept in the history."""
+    dispute = get_open_dispute(store, dispute_id)
+    action = dispute.pop("seller_action", None)
+    if not action:
+        raise PayPalError(422, "NOTHING_TO_REOPEN", "The shop hasn't sent anything on this case yet.")
+    dispute.setdefault("previous_actions", []).append(action)
+    note = str(body.get("message") or "").strip() or "It hasn't arrived."
+    dispute.setdefault("messages", []).append({"posted_by": "BUYER", "time_posted": iso(store.now()), "content": f"❌ {note}"})
+    return update(store, dispute, "WAITING_FOR_SELLER_RESPONSE", "REQUIRED_ACTION")
+
+
 def close_with_replacement(store: Store, dispute_id: str, body: dict) -> dict:
     """The shop sends a replacement (no money moves); the case waits for the customer to confirm."""
     dispute = get_open_dispute(store, dispute_id)

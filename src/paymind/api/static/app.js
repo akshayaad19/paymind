@@ -301,8 +301,10 @@ function disputeStatus(d) {
   const ev = d.evidence?.status;
   if (ev && d.status !== "RESOLVED") {
     const label = shop
-      ? { requested: ["Waiting for photos", "waiting"], rejected: ["Waiting for photos", "waiting"], submitted: ["Check photos", "error"], approved: ["Send replacement", "error"] }[ev]
-      : { requested: ["Photo needed", "error"], rejected: ["Photo needed", "error"], submitted: ["Photos under review", "waiting"], approved: ["Replacement being arranged", "waiting"] }[ev];
+      ? { requested: ["Waiting for photos", "waiting"], rejected: ["Waiting for photos", "waiting"], submitted: ["Check photos", "error"],
+          approved: d.evidence.address ? ["Send replacement", "error"] : ["Waiting for address", "waiting"] }[ev]
+      : { requested: ["Photo needed", "error"], rejected: ["Photo needed", "error"], submitted: ["Photos under review", "waiting"],
+          approved: d.evidence.address ? ["Replacement being arranged", "waiting"] : ["Confirm address", "error"] }[ev];
     if (label) return { text: label[0], kind: label[1] };
   }
   if (d.refund_request) {
@@ -560,13 +562,14 @@ function whatsNewItem(i) {
     : i.days_left < 0 ? ` · <span class="amount-neg">overdue by ${-i.days_left} day${i.days_left === -1 ? "" : "s"}</span>`
     : ` · respond by ${esc(new Date(i.due_date).toLocaleDateString(undefined, { day: "numeric", month: "short" }))} (${i.days_left === 0 ? "today" : `${i.days_left} day${i.days_left === 1 ? "" : "s"} left`})`;
   const act = i.seller_action || {};
-  const shopDid = act.type === "replacement" ? `sent you a replacement${act.carrier ? ` (${esc(act.carrier)} ${esc(act.tracking_number || "")})` : ""}`
+  const shopDid = act.type === "replacement" ? `shipped your replacement${act.carrier ? ` (${esc(act.carrier)}, tracking ${esc(act.tracking_number || "")})` : ""}`
     : `refunded you ${money(act.amount)}`;
   const texts = {
     action_needed: [`🔴 Action needed · ${esc(i.with)}${due}`, "Open", "open"],
     photo_needed: [`📷 ${esc(i.with)} ${i.rejected ? "needs another photo" : "asked for a photo"} to arrange your replacement${i.text ? `: ${esc(i.text)}` : ""}`, "Add photo", "open"],
+    address_needed: [`📍 Your photos were approved. Please confirm your delivery address for the free replacement`, "Confirm", "open"],
     photos_to_review: [`📷 ${esc(i.with)} sent photos · check them to arrange the replacement`, "Review", "open"],
-    confirm_resolution: [`✅ ${esc(i.with)} ${shopDid} · ${timeAgo(i.time)}. If you're happy, mark the case resolved; if not, reply in the case.`, "Open", "open"],
+    confirm_resolution: [`${act.type === "replacement" ? "📦" : "💸"} ${esc(i.with)} ${shopDid} · ${timeAgo(i.time)}. Let us know when you receive it or if you face any issues.`, "Open", "open"],
     new_message: [`📬 New message from ${esc(i.with)} · ${timeAgo(i.time)}${due}`, "Open", "open"],
     case_closed: [`✅ ${esc(i.with)} closed their case · ${esc(i.outcome)}${i.amount_refunded ? ` (${money(i.amount_refunded)})` : ""} · ${timeAgo(i.time)}`, "View", "open"],
     refund_requested: [i.refund_request?.wants === "replacement"
@@ -762,18 +765,22 @@ function poStageNote(p, shop) {
     paid: todo(`Paid. Ship it by <b>${fmtDate(p.expected_date)}</b>${when} and add the tracking number.`),
     shipped: good(`On its way. The customer confirms when it arrives.`),
     delivered: good(`Delivered: the customer confirmed on ${fmtDate(String(p.delivered_at).slice(0, 10))}.`),
-    not_received: todo(`The customer says it hasn't arrived${p.not_received_note ? `: “${esc(p.not_received_note)}”` : "."} Check with the carrier, then ship again (or refund from the chat).`),
+    not_received: todo(`The customer says it hasn't arrived${p.not_received_note ? `: “${esc(p.not_received_note)}”` : "."} Check with the carrier, then ship again or refund.${caseLink(p, "Chat with the customer in the case")}`),
   } : {
     accepted: good(`Accepted. Your invoice is on its way; expected delivery <b>${fmtDate(p.expected_date)}</b>.`),
     invoiced: todo(`Please pay the invoice to start processing. Expected delivery <b>${fmtDate(p.expected_date)}</b>.`),
     paid: days !== null && days < 0 ? todo(`Expected ${fmtDate(p.expected_date)}${when}. Has it arrived?`)
       : good(`Paid, thank you. Your order is being prepared; expected delivery <b>${fmtDate(p.expected_date)}</b>${when}.`),
-    shipped: days !== null && days <= 0 ? todo(`It should have arrived by now. Did you get it?`)
-      : good(`On its way. Expected <b>${fmtDate(p.expected_date)}</b>${when}.`),
+    shipped: days !== null && days <= 0 ? todo(`It should have arrived by now. Did you get it? If yes, click <b>Delivered</b>; if not, <b>Not received</b> opens a case with the shop.`)
+      : good(`On its way (${esc(p.carrier || "")} <span class="mono">${esc(p.tracking_number || "")}</span>): please check your tracking ID. Expected <b>${fmtDate(p.expected_date)}</b>${when}. Let us know when you receive it or if you face any issues.`),
     delivered: good("Delivered. Thanks for your order!"),
-    not_received: todo("You reported it hasn't arrived. The shop has been told and will follow up."),
+    not_received: todo(`You reported it hasn't arrived. A case is open with the shop.${caseLink(p, "Open the case")}`),
   };
   return notes[p.status] || "";
+}
+
+function caseLink(p, label) {
+  return p.dispute_id ? `<div style="margin-top:6px"><button class="btn btn-ghost btn-sm" type="button" data-open-case="${esc(p.dispute_id)}">💬 ${label} · ${esc(p.dispute_id)}</button></div>` : "";
 }
 
 async function poAction(path, body, message) {
@@ -1116,7 +1123,7 @@ function renderThread(res) {
   threadState = res;
   const shopView = state.user.role === "accountant";
   $("#resolve-open").hidden = !(shopView && res.can_resolve && $("#resolve-box").hidden);
-  $("#case-close").hidden = shopView || !res.can_reply;
+  $("#case-close").hidden = shopView || !res.can_reply || Boolean(res.seller_action);  // then the Received / Not received buttons show
   $("#case-close").dataset.armed = ""; $("#case-close").textContent = "✅ Mark as resolved";
   const d = res.dispute, s = disputeStatus(d), mine = state.user.role === "accountant" ? "SELLER" : "BUYER";
   $("#drawer-title").textContent = `${disputeReason(d)} · ${money(d.dispute_amount)}`;
@@ -1134,7 +1141,10 @@ function renderThread(res) {
   const did = sa ? (sa.type === "replacement" ? `sent a replacement · ${esc(sa.carrier || "")} <span class="mono">${esc(sa.tracking_number || "")}</span>`
     : `refunded <b>${money(sa.amount)}</b>`) : "";
   const offerHint = sa ? `<div class="refund-request">${sa.type === "replacement" ? "🔁" : "💸"} ${shopView ? "You" : "The shop"} ${did} · ${shortDate(sa.time)}.
-    ${shopView ? "Waiting for the customer to confirm and close the case." : "If you're happy, click <b>✅ Mark as resolved</b>; if not, reply here."}</div>` : "";
+    ${shopView ? "Waiting for the customer to confirm and close the case." : `Let us know when you receive it or if you face any issues.
+      <div class="track-fields"><button class="btn btn-primary btn-sm" type="button" id="got-it">✅ ${sa.type === "replacement" ? "Received" : "Got the refund"}</button>
+      <input id="not-received-note" placeholder="If not, what happened? (optional)">
+      <button class="btn btn-ghost btn-sm" type="button" id="not-got-it">❌ ${sa.type === "replacement" ? "Not received" : "Refund not received"}</button></div>`}</div>` : "";
   const evidenceBox = evidenceBanner(d, shopView, res.can_reply);
   const photos = (res.photos || []).length ? `<div class="photo-strip">${res.photos.map((ph) =>
     `<a class="photo" data-photo="${esc(ph.photo_id)}" title="${ph.by === mine ? "You" : "They"} · ${shortDate(ph.time)}"><span class="muted small">Loading…</span></a>`).join("")}</div>` : "";
@@ -1198,8 +1208,14 @@ function evidenceBanner(d, shopView, open) {
       <input id="photos-reject-note" placeholder="If not, what's missing?"><button class="btn btn-ghost btn-sm" type="button" id="photos-reject">❌ Ask for another</button></div></div>`
       : `<div class="refund-request">📷 Photos sent. The shop is checking them.</div>`;
   }
-  return shopView ? `<div class="refund-request">✅ Photos approved. Send the free replacement from <b>Resolve…</b> with the tracking ID.</div>`
-    : `<div class="refund-request">✅ The shop approved your photos. Your free replacement is being arranged; you'll get a tracking ID here.</div>`;
+  if (!ev.address) {
+    return shopView ? `<div class="refund-request">✅ Photos approved. Waiting for ${name} to confirm the delivery address.</div>`
+      : `<div class="refund-request">✅ The shop approved your photos. <b>Please confirm your delivery address</b> for the free replacement:
+        <div class="track-fields"><input id="address-input" placeholder="Full address, e.g. 12 MG Road, 3rd floor reception, Chennai 600001">
+        <button class="btn btn-primary btn-sm" type="button" id="address-save">Confirm address</button></div></div>`;
+  }
+  return shopView ? `<div class="refund-request">📍 Send to: <b>${esc(ev.address)}</b>. Send the free replacement from <b>Resolve…</b> with the tracking ID.</div>`
+    : `<div class="refund-request">📍 Your replacement will go to <b>${esc(ev.address)}</b>. You'll get the tracking ID here.</div>`;
 }
 
 async function evidenceAction(kind) {
@@ -1209,6 +1225,34 @@ async function evidenceAction(kind) {
   try {
     renderThread(await api(url, { method: "POST", body: JSON.stringify(body) }));
     toast({ ask: "Asked the customer for photos.", approve: "Photos approved. You can now send the replacement.", reject: "Asked the customer for another photo." }[kind]);
+    loadData(); loadWhatsNew();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+}
+
+async function confirmAddress() {
+  const address = $("#address-input").value.trim();
+  if (address.length < 8) { $("#address-input").focus(); return toast("Please enter your full delivery address."); }
+  try {
+    renderThread(await api(`/api/disputes/${encodeURIComponent(openDisputeId)}/address`, { method: "POST", body: JSON.stringify({ address }) }));
+    toast("Address confirmed. The shop will ship your replacement.");
+    loadData(); loadWhatsNew();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+}
+
+async function gotIt() {
+  try {
+    renderThread(await api(`/api/disputes/${encodeURIComponent(openDisputeId)}/close`, { method: "POST",
+      body: JSON.stringify({ message: threadState?.seller_action?.type === "replacement" ? "The replacement arrived and works. Thank you!" : "I got the refund. Thank you!" }) }));
+    toast("Thanks! The case is closed and the shop has been told.");
+    loadData(); loadWhatsNew();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
+}
+
+async function notGotIt() {
+  try {
+    renderThread(await api(`/api/disputes/${encodeURIComponent(openDisputeId)}/not-received`, { method: "POST",
+      body: JSON.stringify({ note: $("#not-received-note").value.trim() || null }) }));
+    toast("The shop has been told and will follow up in this case.");
     loadData(); loadWhatsNew();
   } catch (err) { if (err.message !== "unauthorized") toast(err.message); }
 }
@@ -1375,12 +1419,21 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   $("#po-drawer").addEventListener("input", (e) => { if (e.target.closest("#po-items")) updateTotal(); });
   $("#drawer-close").addEventListener("click", closeDispute);
+  document.addEventListener("click", (e) => {
+    const c = e.target.closest("[data-open-case]");
+    if (!c) return;
+    $("#po-drawer").hidden = $("#po-backdrop").hidden = true;
+    openDispute(c.dataset.openCase);
+  });
   $("#thread-photo").addEventListener("change", (e) => { attachPhoto(e.target.files[0]); e.target.value = ""; });
   $("#thread").addEventListener("click", (e) => {
     if (e.target.id === "track-save") saveTracking();
     if (e.target.id === "photos-ask") evidenceAction("ask");
     if (e.target.id === "photos-approve") evidenceAction("approve");
     if (e.target.id === "photos-reject") evidenceAction("reject");
+    if (e.target.id === "address-save") confirmAddress();
+    if (e.target.id === "got-it") gotIt();
+    if (e.target.id === "not-got-it") notGotIt();
   });
   $("#resolve-open").addEventListener("click", openResolve);
   $("#case-close").addEventListener("click", closeCase);

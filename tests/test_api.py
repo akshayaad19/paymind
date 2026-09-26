@@ -585,6 +585,27 @@ def test_not_received_goes_back_to_the_shop(setup):
     assert reship["status"] == "shipped" and reship["tracking_number"] == "1Z888"             # shop ships again
 
 
+def test_missing_order_opens_a_case_the_shop_can_chat_on(setup):
+    """Not received → a case on the order's payment (both can message); delivered later → the case closes."""
+    client, _, _ = setup
+    po, rahul, asha = accepted_po(client)
+    pid = po["po_id"]
+    client.post(f"/api/invoices/{po['invoice_id']}/send", headers=asha)
+    client.post(f"/api/invoices/{po['invoice_id']}/pay", headers=rahul)
+    client.post(f"/api/pos/{pid}/ship", json={"carrier": "FedEx", "tracking_number": "1Z999"}, headers=asha)
+    missing = client.post(f"/api/pos/{pid}/not-received", json={"note": "tracking is on hold"}, headers=rahul).json()
+    case_id = missing["dispute_id"]
+    case = client.get(f"/api/disputes/{case_id}", headers=asha).json()
+    assert case["dispute"]["reason"] == "MERCHANDISE_OR_SERVICE_NOT_RECEIVED" and pid in case["messages"][0]["text"]
+    assert "tracking is on hold" in case["messages"][0]["text"] and case["can_reply"]
+    reply = client.post(f"/api/disputes/{case_id}/messages", json={"message": "Checking with FedEx now."}, headers=asha)
+    assert reply.status_code == 200                                                            # Asha can chat with Rahul
+    client.post(f"/api/pos/{pid}/ship", json={"carrier": "FedEx", "tracking_number": "1Z888"}, headers=asha)
+    client.post(f"/api/pos/{pid}/delivered", headers=rahul)
+    closed = client.get(f"/api/disputes/{case_id}", headers=rahul).json()["dispute"]
+    assert closed["status"] == "RESOLVED" and closed["dispute_outcome"]["closed_by"] == "BUYER"
+
+
 def test_order_steps_in_the_wrong_order_are_refused(setup):
     client, _, _ = setup
     po, rahul, asha = accepted_po(client)
@@ -779,9 +800,11 @@ def test_accountant_cancels_an_invoice(setup):
 # ---- free replacement: photos first ------------------------------------------------------------
 
 def approve_photos(client, dispute_id, asha, rahul):
+    """Photos asked for, attached and approved, and the address confirmed: ready for a replacement."""
     client.post(f"/api/disputes/{dispute_id}/request-photos", headers=asha, json={"note": "the left earbud"})
     client.post(f"/api/disputes/{dispute_id}/photos", headers=rahul, files={"file": ("bud.png", PHOTO, "image/png")})
-    return client.post(f"/api/disputes/{dispute_id}/review-photos", headers=asha, json={"approved": True}).json()
+    client.post(f"/api/disputes/{dispute_id}/review-photos", headers=asha, json={"approved": True})
+    return client.post(f"/api/disputes/{dispute_id}/address", headers=rahul, json={"address": "12 MG Road, 3rd floor, Chennai 600001"}).json()
 
 
 def test_replacement_needs_approved_photos(setup):
@@ -805,8 +828,30 @@ def test_replacement_needs_approved_photos(setup):
 
     client.post(f"/api/disputes/{dispute_id}/photos", headers=rahul, files={"file": ("bud2.png", PHOTO, "image/png")})
     approved = client.post(f"/api/disputes/{dispute_id}/review-photos", headers=asha, json={"approved": True}).json()
-    assert approved["dispute"]["evidence"]["status"] == "approved"
+    assert approved["dispute"]["evidence"]["status"] == "approved" and "delivery address" in approved["messages"][-1]["text"]
+    assert ("address_needed", dispute_id) in whats_new_kinds(client, rahul)
+    assert client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha, json=body).status_code == 409   # no address yet
+    assert client.post(f"/api/disputes/{dispute_id}/address", headers=asha, json={"address": "somewhere 12345"}).status_code == 403
+    addr = client.post(f"/api/disputes/{dispute_id}/address", headers=rahul, json={"address": "12 MG Road, 3rd floor, Chennai 600001"}).json()
+    assert addr["dispute"]["evidence"]["address"].startswith("12 MG Road") and addr["messages"][-1]["text"].startswith("📍")
     sent = client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha, json=body).json()
     assert sent["dispute"]["status"] == "WAITING_FOR_BUYER_RESPONSE" and "free replacement" in sent["messages"][-1]["text"]
-    assert "BD123456789IN" in sent["messages"][-1]["text"] and "check it" in sent["messages"][-1]["text"]
+    assert "BD123456789IN" in sent["messages"][-1]["text"] and "12 MG Road" in sent["messages"][-1]["text"]
     assert client.post(f"/api/disputes/{dispute_id}/request-photos", headers=rahul, json={}).status_code == 403  # shop only
+
+
+
+def test_replacement_not_received_goes_back_to_the_shop(setup):
+    client, _, _ = setup
+    rahul, asha = login(client, "rahul"), login(client, "asha")
+    dispute_id = rahuls_dispute(client, rahul)
+    approve_photos(client, dispute_id, asha, rahul)
+    client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha,
+                json={"action": "replacement", "carrier": "Blue Dart", "tracking_number": "BD1"})
+    back = client.post(f"/api/disputes/{dispute_id}/not-received", headers=rahul, json={"note": "Tracking says delivered but nothing came"}).json()
+    assert back["dispute"]["status"] == "WAITING_FOR_SELLER_RESPONSE" and back["seller_action"] is None
+    assert back["messages"][-1]["text"] == "❌ Tracking says delivered but nothing came"
+    assert back["can_resolve"] is True                                           # the shop can send it again
+    again = client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha,
+                        json={"action": "replacement", "carrier": "FedEx", "tracking_number": "FX2"}).json()
+    assert again["seller_action"]["tracking_number"] == "FX2"

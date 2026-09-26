@@ -108,6 +108,7 @@ CREATE TABLE IF NOT EXISTS purchase_orders (  -- customers' purchase orders (Pay
     delivered_at     TEXT,                     -- confirmed by the customer
     not_received_at  TEXT,                     -- reported by the customer
     not_received_note TEXT,
+    dispute_id       TEXT,                     -- the case opened when the customer reported it missing
     created_at       TEXT NOT NULL,
     updated_at       TEXT NOT NULL
 );
@@ -134,7 +135,9 @@ CREATE TABLE IF NOT EXISTS dispute_evidence (  -- photos the shop asked for befo
     dispute_id   TEXT PRIMARY KEY,
     status       TEXT NOT NULL CHECK (status IN ('requested', 'submitted', 'approved', 'rejected')),
     note         TEXT,                      -- what the shop asked for, or why photos were rejected
-    updated_at   TEXT NOT NULL
+    updated_at   TEXT NOT NULL,
+    address      TEXT,                      -- where the customer confirmed the replacement should go
+    address_at   TEXT
 );
 
 CREATE TABLE IF NOT EXISTS dispute_photos (  -- evidence a customer attached to a dispute
@@ -201,6 +204,12 @@ class AppDatabase:
         columns = {r[1] for r in self.conn.execute("PRAGMA table_info(dispute_reads)")}
         if "seen_count" not in columns:  # databases created before this column existed
             self.conn.execute("ALTER TABLE dispute_reads ADD COLUMN seen_count INTEGER NOT NULL DEFAULT 0")
+        if "dispute_id" not in {r[1] for r in self.conn.execute("PRAGMA table_info(purchase_orders)")}:
+            self.conn.execute("ALTER TABLE purchase_orders ADD COLUMN dispute_id TEXT")
+        evidence_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(dispute_evidence)")}
+        for col in ("address", "address_at"):
+            if col not in evidence_cols:
+                self.conn.execute(f"ALTER TABLE dispute_evidence ADD COLUMN {col} TEXT")
         if "wants" not in {r[1] for r in self.conn.execute("PRAGMA table_info(refund_requests)")}:
             self.conn.execute("ALTER TABLE refund_requests ADD COLUMN wants TEXT NOT NULL DEFAULT 'refund'")
         if "token_version" not in {r[1] for r in self.conn.execute("PRAGMA table_info(users)")}:
@@ -313,7 +322,8 @@ class AppDatabase:
 
     def update_po(self, po_id: str, **fields) -> dict:
         allowed = {"status", "customer_po_ref", "items", "requested_date", "expected_date", "notes", "reject_reason", "invoice_id",
-                   "paid_at", "carrier", "tracking_number", "shipped_at", "delivered_at", "not_received_at", "not_received_note"}
+                   "paid_at", "carrier", "tracking_number", "shipped_at", "delivered_at", "not_received_at", "not_received_note",
+                   "dispute_id"}
         sets = {k: (json.dumps(v) if k == "items" else v) for k, v in fields.items() if k in allowed}
         if sets:
             with self.conn:
@@ -360,16 +370,27 @@ class AppDatabase:
 
     def set_evidence(self, dispute_id: str, status: str, note: str | None = None) -> dict:
         with self.conn:
-            self.conn.execute("INSERT OR REPLACE INTO dispute_evidence (dispute_id, status, note, updated_at) VALUES (?, ?, ?, ?)",
-                              (dispute_id, status, note, now_iso()))
+            self.conn.execute(
+                "INSERT INTO dispute_evidence (dispute_id, status, note, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(dispute_id) DO UPDATE SET status = excluded.status, note = excluded.note, updated_at = excluded.updated_at",
+                (dispute_id, status, note, now_iso()))
+        return self.evidence(dispute_id)
+
+    def set_address(self, dispute_id: str, address: str) -> dict:
+        """The customer confirmed where the replacement should go."""
+        with self.conn:
+            self.conn.execute("UPDATE dispute_evidence SET address = ?, address_at = ?, updated_at = ? WHERE dispute_id = ?",
+                              (address, now_iso(), now_iso(), dispute_id))
         return self.evidence(dispute_id)
 
     def evidence(self, dispute_id: str) -> dict | None:
-        row = self.conn.execute("SELECT status, note, updated_at FROM dispute_evidence WHERE dispute_id = ?", (dispute_id,)).fetchone()
+        row = self.conn.execute("SELECT status, note, updated_at, address, address_at FROM dispute_evidence WHERE dispute_id = ?",
+                                (dispute_id,)).fetchone()
         return dict(row) if row else None
 
     def all_evidence(self) -> dict[str, dict]:
-        return {r["dispute_id"]: {"status": r["status"], "note": r["note"], "updated_at": r["updated_at"]}
+        return {r["dispute_id"]: {"status": r["status"], "note": r["note"], "updated_at": r["updated_at"],
+                                  "address": r["address"], "address_at": r["address_at"]}
                 for r in self.conn.execute("SELECT * FROM dispute_evidence")}
 
     # ---- dispute photos -------------------------------------------------------------

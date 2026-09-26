@@ -88,6 +88,7 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
       confirm_resolution  (customer) the shop refunded or sent a replacement; the customer closes the case when happy
       photo_needed  (customer) the shop asked for photos (or asked again) before a replacement
       photos_to_review  (shop) the customer attached the photos the shop asked for
+      address_needed  (customer) photos approved: confirm the delivery address for the replacement
       refund_requested  (shop) the customer asked for a refund or a replacement; stays until the shop does it
       new_message   the other side wrote and the user hasn't seen it
       needs_reply   the other side wrote, the user has seen it, but hasn't answered
@@ -146,6 +147,9 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
         if ev and user.is_customer and ev["status"] in ("requested", "rejected"):
             items.append({**base, "kind": "photo_needed", "time": ev["updated_at"], "text": ev["note"] or "", "rejected": ev["status"] == "rejected"})
             continue
+        if ev and user.is_customer and ev["status"] == "approved" and not ev.get("address") and not dispute.get("seller_action"):
+            items.append({**base, "kind": "address_needed", "time": ev["updated_at"], "text": ""})
+            continue
         if ev and not user.is_customer and ev["status"] == "submitted":
             items.append({**base, "kind": "photos_to_review", "time": ev["updated_at"], "text": ""})
             continue
@@ -172,7 +176,7 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
     items += invoice_updates(user, executor, now)
     if user.is_customer:
         items += refund_updates(user, executor, now)
-    order = {"photo_needed": 0, "photos_to_review": 0, "confirm_resolution": 0, "case_closed": 0, "refunded": 1, "invoice_overdue": 1, "invoice_due": 2, "refund_requested": 0, "new_message": 0, "action_needed": 1, "po_not_received": 1, "po_confirm": 1, "po_ship": 1, "new_po": 1,
+    order = {"address_needed": 0, "photo_needed": 0, "photos_to_review": 0, "confirm_resolution": 0, "case_closed": 0, "refunded": 1, "invoice_overdue": 1, "invoice_due": 2, "refund_requested": 0, "new_message": 0, "action_needed": 1, "po_not_received": 1, "po_confirm": 1, "po_ship": 1, "new_po": 1,
              "po_pay": 2, "po_send_invoice": 2, "needs_reply": 2, "po_shipped": 3, "po_accepted": 3, "po_rejected": 3, "no_reply_yet": 4}
     # overdue / closest deadline first, then by kind, then oldest first
     return sorted(items, key=lambda i: (i.get("days_left") is None, i.get("days_left") or 0, order[i["kind"]], i["time"]))

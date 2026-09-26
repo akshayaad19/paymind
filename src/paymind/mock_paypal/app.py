@@ -233,6 +233,13 @@ def create_app(db_path: str | Path | None = None, initial_db: Path = INITIAL_DB,
 
         return await in_transaction(lambda store: buyer_closes(store, dispute_id, body))
 
+    @app.post("/mock/disputes/{dispute_id}/reopen", tags=["mock"])
+    async def buyer_reopens_dispute(dispute_id: str, body: dict = Body(default={})):
+        """Simulates the buyer saying the replacement or refund didn't arrive: the case goes back to the shop."""
+        from .disputes import buyer_reopens
+
+        return await in_transaction(lambda store: buyer_reopens(store, dispute_id, body))
+
     @app.post("/mock/disputes/{dispute_id}/replacement", tags=["mock"])
     async def seller_sends_replacement(dispute_id: str, body: dict = Body(default={})):
         """Simulates the shop settling a case by sending a replacement (no money moves).

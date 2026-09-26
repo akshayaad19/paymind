@@ -21,13 +21,15 @@ checked on the server for every call; the web page only decides what to show.
   POST /api/pos/{id}/accept     accountants: prices + delivery date → draft PayPal invoice; /reject with a reason
   POST /api/invoices/{id}/pay   customers pay their invoice (mock: simulated PayPal checkout) → PO paid
   POST /api/pos/{id}/ship       accountants: carrier + tracking number → shipped
-  POST /api/pos/{id}/delivered | /not-received   customers confirm delivery or report it missing
+  POST /api/pos/{id}/delivered | /not-received   customers confirm delivery, or report it missing (opens a case the shop can chat on)
   GET  /api/disputes/{id}       a dispute and its message thread (own disputes only for customers)
   POST /api/disputes/{id}/messages  send a message to the other side of the dispute
   POST /api/disputes/{id}/resolve   accountants: refund (full or partial) or send a replacement; the customer then closes the case
   POST /api/disputes/{id}/photos    attach a photo to a dispute (e.g. the broken item); GET …/photos/{photo_id}
   POST /api/disputes/{id}/close     customers: close their own case as resolved (the shop is told)
   POST /api/disputes/{id}/request-photos | /review-photos   accountants: ask for photos before a replacement, then approve or reject them
+  POST /api/disputes/{id}/address   customers: confirm where the replacement should go (after the photos are approved)
+  POST /api/disputes/{id}/not-received   customers: the replacement / refund didn't arrive; the case goes back to the shop
   POST /api/disputes/{id}/tracking  accountants: record a shipment (carrier, tracking number, status) for the disputed payment
   GET  /api/whats-new           new messages / replies owed / no reply yet, on open disputes
   GET  /api/audit               the caller's own audit log
@@ -165,6 +167,14 @@ class PhotosRequestIn(BaseModel):
 class PhotosReviewIn(BaseModel):
     approved: bool
     note: str | None = Field(default=None, max_length=500)       # why they were rejected
+
+
+class AddressIn(BaseModel):
+    address: str = Field(min_length=8, max_length=300)
+
+
+class NotReceivedIn(BaseModel):
+    note: str | None = Field(default=None, max_length=500)
 
 
 class TrackingIn(BaseModel):
@@ -545,6 +555,9 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         if po["status"] not in ("shipped", "not_received", "paid"):
             raise HTTPException(409, "This order isn't on its way yet.")
         services.appdb.log_action(user, "confirm_delivery", {"po_id": po_id}, "success", result_summary=f"{po_id} received", confirmed=True)
+        if po.get("dispute_id"):  # the case opened when it went missing: the customer's confirmation closes it
+            services.executor.client.post(f"{services.executor.base_url}/mock/disputes/{po['dispute_id']}/close",
+                                          json={"message": f"Order {po_id} has arrived. Thank you, I'm closing this case."})
         return po_view(services.appdb.update_po(po_id, status="delivered", delivered_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
 
     @app.post("/api/pos/{po_id}/not-received", tags=["purchase orders"])
@@ -553,10 +566,30 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         if po["status"] not in ("shipped", "paid"):
             raise HTTPException(409, "This order isn't on its way yet.")
         note = (body.note or "").strip() or None
-        services.appdb.log_action(user, "report_not_received", {"po_id": po_id, "note": note}, "success",
-                                  result_summary=f"{po_id} reported as not received", confirmed=True)
-        return po_view(services.appdb.update_po(po_id, status="not_received", not_received_note=note,
+        dispute_id = po.get("dispute_id") or open_case_for_po(user, po, note)
+        services.appdb.log_action(user, "report_not_received", {"po_id": po_id, "note": note, "dispute_id": dispute_id}, "success",
+                                  result_summary=f"{po_id} reported as not received (case {dispute_id})", confirmed=True)
+        return po_view(services.appdb.update_po(po_id, status="not_received", not_received_note=note, dispute_id=dispute_id,
                                                 not_received_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")))
+
+    def open_case_for_po(user: User, po: dict, note: str | None) -> str | None:
+        """A paid order that didn't arrive becomes a case on its payment, so the shop and the customer can talk
+        it through (and the shop can ship again or refund)."""
+        if not po.get("invoice_id"):
+            return None
+        invoice = services.executor.execute("show_invoice_details", {"invoice_id": po["invoice_id"]}, caller=user)
+        payments = ((invoice.body or {}).get("payments") or {}).get("transactions") or [] if invoice.ok else []
+        if not payments:
+            return None
+        items = ", ".join(f"{i['quantity']} × {i['name']}" for i in po.get("items") or [])
+        text = f"My order {po['po_id']} ({items}) hasn't arrived." + (f" {note}" if note else "")
+        r = services.executor.client.post(f"{services.executor.base_url}/mock/disputes", json={
+            "capture_id": payments[0]["payment_id"], "reason": "MERCHANDISE_OR_SERVICE_NOT_RECEIVED", "message": text})
+        if r.status_code < 300:
+            return r.json()["dispute_id"]
+        listed = services.executor.execute("list_disputes", {"page_size": 50}, caller=user)  # already open: use that case
+        return next((d["dispute_id"] for d in (listed.body or {}).get("items", []) if listed.ok
+                     and d["disputed_transactions"][0]["seller_transaction_id"] == payments[0]["payment_id"] and d["status"] != "RESOLVED"), None)
 
     @app.post("/api/pos/{po_id}/reject", tags=["purchase orders"])
     def reject_po(po_id: str, body: POReject, user: User = Depends(require_role("accountant"))):
@@ -719,8 +752,9 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         if not evidence or evidence["status"] != "submitted":
             raise HTTPException(409, "There are no new photos to review.")
         if body.approved:
-            shop_message(user, dispute_id, "✅ Thanks for the photos, they confirm the problem. We'll send you a free replacement "
-                         "and share the tracking ID here.", "approve_photos", {})
+            shop_message(user, dispute_id, "✅ Thanks for the photos, they confirm the problem. We'll send you a free replacement. "
+                         "Please confirm your delivery address in this case, and we'll ship it and share the tracking ID here.",
+                         "approve_photos", {})
             services.appdb.set_evidence(dispute_id, "approved")
         else:
             why = (body.note or "").strip() or "the photo doesn't show the problem clearly"
@@ -728,6 +762,41 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
                          "another one (📎).", "reject_photos", {"note": why})
             services.appdb.set_evidence(dispute_id, "rejected", why)
         return conversation(own_dispute(user, dispute_id))
+
+    @app.post("/api/disputes/{dispute_id}/address", tags=["disputes"])
+    def confirm_address(dispute_id: str, body: AddressIn, user: User = Depends(require_role("customer"))):
+        """After the photos are approved, the customer confirms where the replacement should go."""
+        own_dispute(user, dispute_id)
+        evidence = services.appdb.evidence(dispute_id)
+        if not evidence or evidence["status"] != "approved":
+            raise HTTPException(409, "The shop asks for your address once it has approved your photos.")
+        address = " ".join(body.address.split())
+        sent = services.executor.execute("send_message_about_dispute_to_other_party",
+                                         {"dispute_id": dispute_id, "message": f"📍 Please send the replacement to: {address}"}, caller=user)
+        services.appdb.log_action(user, "confirm_address", {"dispute_id": dispute_id}, "success" if sent.ok else "failed",
+                                  result_summary=f"address confirmed for {dispute_id}", confirmed=True)
+        services.appdb.set_address(dispute_id, address)
+        dispute = own_dispute(user, dispute_id)
+        mark_seen(services.appdb, user, dispute)
+        return conversation(dispute)
+
+    @app.post("/api/disputes/{dispute_id}/not-received", tags=["disputes"])
+    def replacement_not_received(dispute_id: str, body: NotReceivedIn, user: User = Depends(require_role("customer"))):
+        """The shop sent a replacement (or refunded) but it didn't arrive: the case goes back to the shop."""
+        dispute = own_dispute(user, dispute_id)
+        if not dispute.get("seller_action"):
+            raise HTTPException(409, "The shop hasn't sent anything on this case yet.")
+        what = "replacement" if dispute["seller_action"].get("type") == "replacement" else "refund"
+        note = (body.note or "").strip() or f"The {what} hasn't reached me yet."
+        r = services.executor.client.post(f"{services.executor.base_url}/mock/disputes/{dispute_id}/reopen", json={"message": note})
+        services.appdb.log_action(user, "report_not_received", {"dispute_id": dispute_id, "note": note},
+                                  "success" if r.status_code < 300 else "failed", http_status=r.status_code,
+                                  result_summary=f"{what} not received on {dispute_id}", confirmed=True)
+        if r.status_code >= 300:
+            raise HTTPException(502, "Couldn't update the case. Please try again.")
+        dispute = own_dispute(user, dispute_id)
+        mark_seen(services.appdb, user, dispute)
+        return conversation(dispute)
 
     @app.post("/api/disputes/{dispute_id}/tracking", tags=["disputes"])
     def add_tracking(dispute_id: str, body: TrackingIn, user: User = Depends(require_role("accountant"))):
@@ -774,11 +843,14 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
             evidence = services.appdb.evidence(dispute_id)
             if not evidence or evidence["status"] != "approved":
                 raise HTTPException(409, "Before a replacement: ask the customer for photos (📷) and approve them.")
+            if not evidence.get("address"):
+                raise HTTPException(409, "Waiting for the customer to confirm the delivery address.")
             carrier, tracking = (body.carrier or "").strip(), (body.tracking_number or "").strip()
             if len(carrier) < 2 or len(tracking) < 3:
                 raise HTTPException(422, "Add the carrier and tracking number for the replacement.")
-            text = (f"We're sending you a free replacement via {carrier}. Your tracking ID is {tracking}: please check it "
-                    "for delivery updates, and mark this case resolved once it arrives." + (f" {note}" if note else ""))
+            text = (f"📦 Your free replacement is on its way to {evidence['address']} via {carrier}. Tracking ID: {tracking}, "
+                    "please check it for delivery updates. Let us know when you receive it or if you face any issues: click "
+                    "✅ Received if it arrived, or ❌ Not received if it didn't." + (f" {note}" if note else ""))
             sent = services.executor.execute("send_message_about_dispute_to_other_party",
                                              {"dispute_id": dispute_id, "message": text}, caller=user)
             r = services.executor.client.post(f"{services.executor.base_url}/mock/disputes/{dispute_id}/replacement",
