@@ -69,9 +69,8 @@ def _parse(ts: str):
 
 
 def open_refund_request(dispute: dict, requests: dict[str, dict]) -> dict | None:
-    """The customer's refund request while it's the shop's turn. Refunding resolves the dispute and an
-    offer hands the turn to the customer, so either one clears it (if the customer declines the offer,
-    the turn and the request come back)."""
+    """The customer's request while it's the shop's turn. A refund or a replacement hands the turn to
+    the customer (who then closes the case), so either one clears it."""
     request = requests.get(dispute.get("dispute_id"))
     if not request or dispute.get("status") not in ("WAITING_FOR_SELLER_RESPONSE", "OPEN"):
         return None
@@ -83,11 +82,11 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
 
       invoice_overdue / invoice_due  unpaid invoices: past their due date (both sides; the shop sees
                     which customer owes), or due within INVOICE_SOON_DAYS days (customer)
-      case_closed   the OTHER side closed a case in the last CLOSED_DAYS days (refund, offer accepted, replacement,
-                    or the customer marked it resolved); shown until this user opens the case
+      case_closed   (shop) the customer closed a case in the last CLOSED_DAYS days (only customers close cases);
+                    shown until the shop opens it
       refunded      (customer) the shop refunded one of their payments in the last CLOSED_DAYS days
-      refund_requested  (shop) the customer formally asked for a refund of the disputed amount; stays until the shop
-                    refunds or makes an offer
+      confirm_resolution  (customer) the shop refunded or sent a replacement; the customer closes the case when happy
+      refund_requested  (shop) the customer asked for a refund or a replacement; stays until the shop does it
       new_message   the other side wrote and the user hasn't seen it
       needs_reply   the other side wrote, the user has seen it, but hasn't answered
       no_reply_yet  the user wrote `waiting_days`+ days ago and the other side hasn't answered
@@ -96,8 +95,8 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
                     ship a paid order (with its delivery date), follow up a "not received" report
       po_accepted / po_rejected / po_pay / po_shipped / po_confirm   (customer) the shop's decision,
                     an invoice to pay, a shipment with tracking, "has it arrived?" once the date comes
-      action_needed PayPal says it's this user's turn to act (the shop must respond, or the customer
-                    must answer an offer). Shown on every login until the dispute's status changes;
+      action_needed PayPal says it's this user's turn to act (the shop must respond). Shown on every
+                    login until the dispute's status changes;
                     a message alone doesn't clear it. Carries PayPal's response deadline.
 
     Every item also says whether it's the user's turn (action_needed) and, if so, the deadline.
@@ -131,9 +130,8 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
             "dispute_id": dispute["dispute_id"], "reason": dispute.get("reason"), "amount": dispute.get("dispute_amount"),
             "with": other_name, "time": last["time_posted"], "text": last["content"],
         }
-        if dispute.get("offer"):  # the shop's offer waiting for the customer's answer
-            base["offer"] = {"amount": dispute["offer"].get("offer_amount"), "type": dispute["offer"].get("offer_type"),
-                             "note": dispute["offer"].get("note")}
+        if dispute.get("seller_action"):  # what the shop did (refund / replacement), waiting for the customer to close
+            base["seller_action"] = dispute["seller_action"]
         my_turn_status = "WAITING_FOR_BUYER_RESPONSE" if user.is_customer else "WAITING_FOR_SELLER_RESPONSE"
         if dispute.get("status") == my_turn_status:
             due = dispute.get("seller_response_due_date") if not user.is_customer else dispute.get("buyer_response_due_date")
@@ -141,6 +139,10 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
             base["due_date"] = due
             base["days_left"] = (_parse(due) - now).days if due else None
         request = open_refund_request(dispute, requests)
+        if user.is_customer and dispute.get("seller_action") and dispute.get("status") == "WAITING_FOR_BUYER_RESPONSE":
+            # the shop refunded or sent a replacement: only the customer can close the case
+            items.append({**base, "kind": "confirm_resolution", "time": dispute["seller_action"].get("time", base["time"])})
+            continue
         if request:
             base["refund_request"] = request
         if request and not user.is_customer:  # a clear to-do for the shop, above a plain "new message"
@@ -149,6 +151,8 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
                           "text": request["message"]})
         elif last["posted_by"] == other_side(user):
             new = unread(user, dispute, reads.get(dispute["dispute_id"], 0))
+            if not new and not user.is_customer and dispute.get("seller_action") and dispute.get("status") == "WAITING_FOR_BUYER_RESPONSE":
+                continue  # the shop already refunded / replaced: nothing to reply to until the customer writes again
             items.append({**base, "kind": "new_message" if new else "needs_reply", "count": len(new)})
         elif base.get("action_needed"):
             items.append({**base, "kind": "action_needed"})
@@ -158,7 +162,7 @@ def whats_new(user: User, executor: Executor, appdb: AppDatabase, now=None, wait
     items += invoice_updates(user, executor, now)
     if user.is_customer:
         items += refund_updates(user, executor, now)
-    order = {"case_closed": 0, "refunded": 1, "invoice_overdue": 1, "invoice_due": 2, "refund_requested": 0, "new_message": 0, "action_needed": 1, "po_not_received": 1, "po_confirm": 1, "po_ship": 1, "new_po": 1,
+    order = {"confirm_resolution": 0, "case_closed": 0, "refunded": 1, "invoice_overdue": 1, "invoice_due": 2, "refund_requested": 0, "new_message": 0, "action_needed": 1, "po_not_received": 1, "po_confirm": 1, "po_ship": 1, "new_po": 1,
              "po_pay": 2, "po_send_invoice": 2, "needs_reply": 2, "po_shipped": 3, "po_accepted": 3, "po_rejected": 3, "no_reply_yet": 4}
     # overdue / closest deadline first, then by kind, then oldest first
     return sorted(items, key=lambda i: (i.get("days_left") is None, i.get("days_left") or 0, order[i["kind"]], i["time"]))
@@ -168,7 +172,6 @@ CLOSED_DAYS = 14  # how long a closed case or a refund stays in What's new
 
 OUTCOMES = {  # outcome_code -> how it ended, in words (the amount is added where there is one)
     "RESOLVED_BUYER_FAVOUR": "refunded",
-    "RESOLVED_WITH_PAYOUT": "settled with the offer",
     "RESOLVED_WITH_REPLACEMENT": "replacement sent",
     "CANCELED_BY_BUYER": "marked resolved by the customer",
     "RESOLVED_SELLER_FAVOUR": "closed in the shop's favour",

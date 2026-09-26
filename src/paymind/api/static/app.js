@@ -302,6 +302,10 @@ function disputeStatus(d) {
     const what = d.refund_request.wants === "replacement" ? "Replacement" : "Refund";
     return shop ? { text: `${what} requested by customer`, kind: "error" } : { text: `${what} requested`, kind: "waiting" };
   }
+  if (d.seller_action && d.status === "WAITING_FOR_BUYER_RESPONSE") {
+    const what = d.seller_action.type === "replacement" ? "Replacement sent" : "Refunded";
+    return shop ? { text: `${what} · waiting for customer`, kind: "waiting" } : { text: `${what} · please confirm`, kind: "error" };
+  }
   switch (d.status) {
     case "WAITING_FOR_SELLER_RESPONSE": return shop ? { text: "Needs your response", kind: "error" } : { text: "Waiting for the shop", kind: "waiting" };
     case "WAITING_FOR_BUYER_RESPONSE": return shop ? { text: "Waiting for the customer", kind: "waiting" } : { text: "Needs your response", kind: "error" };
@@ -376,9 +380,13 @@ const DATA_VIEWS = {
     row: (i) => { const s = invoiceStatus(i);
       const canSend = state.user.role === "accountant" && i.status === "DRAFT";
       const canPay = state.user.role === "customer" && ["SENT", "UNPAID", "PARTIALLY_PAID"].includes(i.status);
+      const canChase = state.user.role === "accountant" && ["SENT", "UNPAID", "PARTIALLY_PAID"].includes(i.status);
       const actions = `<div class="row-actions">
           <button class="btn btn-ghost btn-sm" data-inv="download" data-id="${esc(i.id)}" data-number="${esc(i.detail?.invoice_number || "invoice")}">⬇ PDF</button>
           ${canSend ? `<button class="btn btn-primary btn-sm" data-inv="send" data-id="${esc(i.id)}" data-to="${esc(recipientOf(i))}">Send</button>` : ""}
+          ${canChase ? `<button class="btn btn-ghost btn-sm" data-inv="remind" data-id="${esc(i.id)}">Remind</button>
+            <button class="btn btn-ghost btn-sm" data-inv="mark-paid" data-id="${esc(i.id)}">Mark paid</button>
+            <button class="btn btn-ghost btn-sm" data-inv="cancel" data-id="${esc(i.id)}">Cancel</button>` : ""}
           ${canPay ? `<button class="btn btn-primary btn-sm" data-inv="pay" data-id="${esc(i.id)}" data-amount="${esc(i.due_amount?.value || "")}">Pay ${money(i.due_amount)}</button>` : ""}
         </div>`;
       const items = (i.items || []).map((it) => `${esc(it.name)} × ${esc(it.quantity)}`).join(", ");
@@ -544,14 +552,14 @@ function whatsNewItem(i) {
   const due = !i.action_needed ? "" : i.days_left === null ? " · action needed"
     : i.days_left < 0 ? ` · <span class="amount-neg">overdue by ${-i.days_left} day${i.days_left === -1 ? "" : "s"}</span>`
     : ` · respond by ${esc(new Date(i.due_date).toLocaleDateString(undefined, { day: "numeric", month: "short" }))} (${i.days_left === 0 ? "today" : `${i.days_left} day${i.days_left === 1 ? "" : "s"} left`})`;
-  const offer = i.offer && state.user.role === "customer"
-    ? `🤝 The shop offered ${money(i.offer.amount)} to settle this. Reply in the chat: “accept the offer” or “decline the offer”${due}` : null;
+  const act = i.seller_action || {};
+  const shopDid = act.type === "replacement" ? `sent you a replacement${act.carrier ? ` (${esc(act.carrier)} ${esc(act.tracking_number || "")})` : ""}`
+    : `refunded you ${money(act.amount)}`;
   const texts = {
-    action_needed: [offer || `🔴 Action needed · ${esc(i.with)}${due}`, "Open", "open"],
+    action_needed: [`🔴 Action needed · ${esc(i.with)}${due}`, "Open", "open"],
+    confirm_resolution: [`✅ ${esc(i.with)} ${shopDid} · ${timeAgo(i.time)}. If you're happy, mark the case resolved; if not, reply in the case.`, "Open", "open"],
     new_message: [`📬 New message from ${esc(i.with)} · ${timeAgo(i.time)}${due}`, "Open", "open"],
-    case_closed: [state.user.role === "accountant"
-      ? `✅ ${esc(i.with)}'s case was closed · ${esc(i.outcome)}${i.amount_refunded ? ` (${money(i.amount_refunded)})` : ""} · ${timeAgo(i.time)}`
-      : `✅ The shop resolved your case · ${esc(i.outcome)}${i.amount_refunded ? ` (${money(i.amount_refunded)})` : ""}${i.tracking_number ? ` · ${esc(i.carrier || "")} ${esc(i.tracking_number)}` : ""} · ${timeAgo(i.time)}`, "View", "open"],
+    case_closed: [`✅ ${esc(i.with)} closed their case · ${esc(i.outcome)}${i.amount_refunded ? ` (${money(i.amount_refunded)})` : ""} · ${timeAgo(i.time)}`, "View", "open"],
     refund_requested: [i.refund_request?.wants === "replacement"
       ? `🔁 ${esc(i.with)} asked for a replacement · ${timeAgo(i.time)}${due}`
       : `💸 ${esc(i.with)} asked for a refund of ${money(i.refund_request?.amount || i.amount)} · ${timeAgo(i.time)}${due}`, "Resolve", "open"],
@@ -577,7 +585,9 @@ function whatsNewItem(i) {
       : i.days_left === 0 ? "due today" : `due in ${i.days_left} day${i.days_left === 1 ? "" : "s"}`;
     const what = shop ? `🧾 ${esc(i.with)}'s invoice is ${when}` : `🧾 Your invoice is ${when}`;
     return `<div class="wn-item"><div><div class="what">${what}</div><div class="quote">${esc(i.invoice_number || i.invoice_id)} · ${money(i.amount)} · due ${esc(fmtDate(i.due_date))}</div></div>
-      <button class="btn ${shop ? "btn-ghost" : "btn-primary"}" data-wn="invoice">${shop ? "View" : "Pay"}</button></div>`;
+      ${shop ? `<div class="row-actions"><button class="btn btn-ghost" data-inv="remind" data-id="${esc(i.invoice_id)}">Remind</button>
+        <button class="btn btn-ghost" data-inv="mark-paid" data-id="${esc(i.invoice_id)}">Mark paid</button></div>`
+        : `<button class="btn btn-primary" data-wn="invoice">Pay</button>`}</div>`;
   }
   if (i.kind.startsWith("po") || i.kind === "new_po") {
     const [what, label] = texts[i.kind];
@@ -615,6 +625,8 @@ async function loadWhatsNew() {
   card.innerHTML = html;
   $("#messages").prepend(card);
   card.addEventListener("click", (e) => {
+    const inv = e.target.closest("[data-inv]");
+    if (inv) return invoiceAction(inv);
     const b = e.target.closest("[data-wn]");
     if (!b) return;
     if (b.dataset.wn === "open") return openDispute(b.dataset.dispute);
@@ -635,6 +647,27 @@ async function downloadInvoice(id, number) {
   const a = Object.assign(document.createElement("a"), { href: url, download: `${number}.pdf` });
   document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 5000);
+}
+
+// Accountants sort out unpaid invoices: remind, mark as paid (paid another way) or cancel. Second click confirms.
+const INVOICE_ACTIONS = {
+  remind: { ask: "Send reminder?", done: "Reminder sent to the customer." },
+  "mark-paid": { ask: "Mark paid (bank transfer)?", done: "Marked as paid.", body: { method: "BANK_TRANSFER" } },
+  cancel: { ask: "Cancel this invoice?", done: "Invoice cancelled." },
+};
+async function invoiceAction(btn) {
+  const a = INVOICE_ACTIONS[btn.dataset.inv];
+  if (!btn.dataset.armed) {
+    btn.dataset.armed = "1"; const label = btn.textContent; btn.textContent = a.ask;
+    setTimeout(() => { if (btn.isConnected && btn.dataset.armed) { delete btn.dataset.armed; btn.textContent = label; } }, 5000);
+    return;
+  }
+  btn.disabled = true;
+  try {
+    await api(`/api/invoices/${encodeURIComponent(btn.dataset.id)}/${btn.dataset.inv}`, { method: "POST", body: JSON.stringify(a.body || {}) });
+    toast(a.done);
+    loadData(); loadWhatsNew();
+  } catch (err) { if (err.message !== "unauthorized") toast(err.message); btn.disabled = false; }
 }
 
 async function payInvoice(btn) {
@@ -1011,7 +1044,8 @@ function resolveChoice() { return document.querySelector('input[name="resolve"]:
 function updateResolveBox() {
   const choice = resolveChoice(), amount = threadState?.dispute?.dispute_amount;
   $$(".resolve-fields [data-for]").forEach((el) => { el.hidden = el.dataset.for !== choice; });
-  $("#resolve-confirm").textContent = { refund: `Refund ${money(amount)}`, offer: "Send offer", replacement: "Send replacement" }[choice];
+  const partial = choice === "refund" && $("#resolve-amount").value.trim();
+  $("#resolve-confirm").textContent = { refund: `Refund ${partial ? money({ value: partial }) : money(amount)}`, replacement: "Send replacement" }[choice];
   $("#resolve-confirm").dataset.armed = "";
 }
 
@@ -1019,7 +1053,7 @@ function openResolve() {
   $("#resolve-box").hidden = false;
   $("#resolve-open").hidden = true;
   $("#thread-form").hidden = true;
-  $("#resolve-refund-text").textContent = `Give ${threadState.dispute.disputed_transactions?.[0]?.buyer?.name || "the customer"} their ${money(threadState.dispute.dispute_amount)} back; the dispute closes`;
+  $("#resolve-refund-text").textContent = `Give ${threadState.dispute.disputed_transactions?.[0]?.buyer?.name || "the customer"} their ${money(threadState.dispute.dispute_amount)} back, or part of it`;
   const wants = threadState.dispute.refund_request?.wants;  // start on what the customer asked for
   if (wants) document.querySelector(`input[name="resolve"][value="${wants === "replacement" ? "replacement" : "refund"}"]`).checked = true;
   updateResolveBox();
@@ -1033,9 +1067,9 @@ function closeResolve() {
 async function confirmResolve() {
   const btn = $("#resolve-confirm"), choice = resolveChoice();
   const body = { action: choice, note: $("#resolve-note").value.trim() || null };
-  if (choice === "offer") {
+  if (choice === "refund" && $("#resolve-amount").value.trim()) {
     body.amount = $("#resolve-amount").value.trim();
-    if (!body.amount || isNaN(Number(body.amount))) { $("#resolve-amount").focus(); return toast("Enter the amount you're offering."); }
+    if (isNaN(Number(body.amount)) || Number(body.amount) <= 0) { $("#resolve-amount").focus(); return toast("Enter a valid amount, or leave it empty for the full refund."); }
   }
   if (choice === "replacement") {
     body.carrier = $("#resolve-carrier").value.trim();
@@ -1045,15 +1079,15 @@ async function confirmResolve() {
   }
   if (!btn.dataset.armed) {  // second click confirms: money and case outcomes are hard to undo
     btn.dataset.armed = "1";
-    btn.textContent = choice === "refund" ? `Confirm refund of ${money(threadState.dispute.dispute_amount)}?`
-      : choice === "replacement" ? "Confirm: send replacement?" : `Confirm offer of ${money({ value: body.amount })}?`;
+    btn.textContent = choice === "refund" ? `Confirm refund of ${money(body.amount ? { value: body.amount } : threadState.dispute.dispute_amount)}?`
+      : "Confirm: send replacement?";
     return;
   }
   btn.disabled = true;
   try {
     const res = await api(`/api/disputes/${encodeURIComponent(openDisputeId)}/resolve`, { method: "POST", body: JSON.stringify(body) });
-    toast({ refund: "Refunded. The dispute is resolved.", offer: "Offer sent to the customer.",
-      replacement: "Replacement recorded. The customer has the tracking number; the dispute is resolved." }[choice]);
+    toast({ refund: "Refunded. The customer will confirm and close the case.",
+      replacement: "Replacement recorded. The customer has the tracking number and will confirm." }[choice]);
     ["#resolve-amount", "#resolve-note", "#resolve-carrier", "#resolve-tracking"].forEach((s) => { $(s).value = ""; });
     $("#resolve-box").hidden = true;
     renderThread(res);
@@ -1078,11 +1112,13 @@ function renderThread(res) {
   const o = d.dispute_outcome || {};
   const ended = { RESOLVED_WITH_REPLACEMENT: `🔁 Replacement sent · ${esc(o.carrier || "")} ${esc(o.tracking_number || "")}`,
     RESOLVED_BUYER_FAVOUR: `💸 Refunded ${o.amount_refunded ? money(o.amount_refunded) : ""}`,
-    RESOLVED_WITH_PAYOUT: `🤝 Settled with the offer ${o.amount_refunded ? money(o.amount_refunded) : ""}`,
     CANCELED_BY_BUYER: "✅ Marked resolved by the customer" }[o.outcome_code];
   const outcome = d.status === "RESOLVED" && ended ? `<div class="refund-request">Case closed · ${ended}</div>` : "";
-  const offerHint = d.offer && !shopView && res.can_reply
-    ? `<div class="refund-request">🤝 The shop offered <b>${money(d.offer.offer_amount)}</b> to settle this. To accept or decline, tell the assistant in <b>Chat</b> (e.g. “accept the offer”), so it's recorded.</div>` : "";
+  const sa = res.seller_action && d.status !== "RESOLVED" ? res.seller_action : null;
+  const did = sa ? (sa.type === "replacement" ? `sent a replacement · ${esc(sa.carrier || "")} <span class="mono">${esc(sa.tracking_number || "")}</span>`
+    : `refunded <b>${money(sa.amount)}</b>`) : "";
+  const offerHint = sa ? `<div class="refund-request">${sa.type === "replacement" ? "🔁" : "💸"} ${shopView ? "You" : "The shop"} ${did} · ${shortDate(sa.time)}.
+    ${shopView ? "Waiting for the customer to confirm and close the case." : "If you're happy, click <b>✅ Mark as resolved</b>; if not, reply here."}</div>` : "";
   const photos = (res.photos || []).length ? `<div class="photo-strip">${res.photos.map((ph) =>
     `<a class="photo" data-photo="${esc(ph.photo_id)}" title="${ph.by === mine ? "You" : "They"} · ${shortDate(ph.time)}"><span class="muted small">Loading…</span></a>`).join("")}</div>` : "";
   $("#thread").innerHTML = purchaseBox(res.purchase, shopView && res.can_reply) + requestLine + offerHint + outcome + photos + res.messages.map((m) => `
@@ -1255,7 +1291,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#data-table").addEventListener("click", (e) => {
     const inv = e.target.closest("[data-inv]");
     if (inv) return inv.dataset.inv === "download" ? downloadInvoice(inv.dataset.id, inv.dataset.number)
-      : inv.dataset.inv === "pay" ? payInvoice(inv) : sendInvoice(inv);
+      : inv.dataset.inv === "pay" ? payInvoice(inv) : inv.dataset.inv === "send" ? sendInvoice(inv) : invoiceAction(inv);
     const row = e.target.closest("tr[data-dispute]");
     if (row) openDispute(row.dataset.dispute);
   });
@@ -1293,6 +1329,7 @@ document.addEventListener("DOMContentLoaded", () => {
   $("#resolve-cancel").addEventListener("click", closeResolve);
   $("#resolve-confirm").addEventListener("click", confirmResolve);
   $("#resolve-options").addEventListener("change", updateResolveBox);
+  $("#resolve-amount").addEventListener("input", updateResolveBox);
   $("#drawer-backdrop").addEventListener("click", closeDispute);
   document.addEventListener("keydown", (e) => {
     if (e.key !== "Escape") return;

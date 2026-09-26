@@ -596,30 +596,32 @@ def test_order_steps_in_the_wrong_order_are_refused(setup):
 
 # ---- resolving a dispute (shop) -------------------------------------------------------------------------
 
-def test_resolve_refund_clears_the_reminder(setup):
-    client, _, services = setup
-    asha = login(client, "asha")
-    rid = dispute_of(services, "user_123")
-    assert any(i.get("dispute_id") == rid for i in client.get("/api/whats-new", headers=asha).json()["items"])
-    assert client.get(f"/api/disputes/{rid}", headers=asha).json()["can_resolve"] is True
-    done = client.post(f"/api/disputes/{rid}/resolve", json={"action": "refund", "note": "Sorry!"}, headers=asha).json()
-    assert done["dispute"]["status"] == "RESOLVED" and done["can_resolve"] is False and done["can_reply"] is False
-    assert not any(i.get("dispute_id") == rid for i in client.get("/api/whats-new", headers=asha).json()["items"])
-    assert services.appdb.recent_actions("u_asha")[0]["tool"] == "accept_claim"
-    assert client.post(f"/api/disputes/{rid}/resolve", json={"action": "refund"}, headers=asha).status_code == 409
-
-
-def test_resolve_with_an_offer_moves_the_turn_to_the_customer(setup):
+def test_shop_refund_hands_the_case_to_the_customer(setup):
+    """The shop refunds; only the customer can close the case."""
     client, _, services = setup
     asha, rahul = login(client, "asha"), login(client, "rahul")
     rid = dispute_of(services, "user_123")
-    assert client.post(f"/api/disputes/{rid}/resolve", json={"action": "offer", "amount": "999"}, headers=asha).status_code == 422
-    res = client.post(f"/api/disputes/{rid}/resolve", json={"action": "offer", "amount": "20"}, headers=asha).json()
-    assert res["dispute"]["status"] == "WAITING_FOR_BUYER_RESPONSE" and res["offer"]["offer_amount"]["value"] == "20.00"
-    mine = {i["dispute_id"]: i for i in client.get("/api/whats-new", headers=asha).json()["items"] if i.get("dispute_id")}
-    assert rid not in mine or not mine[rid].get("action_needed")            # no longer the shop's turn
+    assert client.get(f"/api/disputes/{rid}", headers=asha).json()["can_resolve"] is True
+    done = client.post(f"/api/disputes/{rid}/resolve", json={"action": "refund", "note": "Sorry!"}, headers=asha).json()
+    assert done["dispute"]["status"] == "WAITING_FOR_BUYER_RESPONSE" and done["can_resolve"] is False and done["can_reply"] is True
+    assert done["seller_action"]["type"] == "refund" and done["seller_action"]["amount"]["value"] == "79.99"
+    assert services.appdb.recent_actions("u_asha")[0]["tool"] == "accept_claim"
+    assert client.post(f"/api/disputes/{rid}/resolve", json={"action": "refund"}, headers=asha).status_code == 409
+    closed = client.post(f"/api/disputes/{rid}/close", headers=rahul).json()["dispute"]
+    assert closed["status"] == "RESOLVED" and closed["dispute_outcome"]["outcome_code"] == "RESOLVED_BUYER_FAVOUR"
+
+
+def test_shop_can_refund_part_of_the_amount(setup):
+    """No offers: a partial refund just happens, and the customer is asked to confirm."""
+    client, _, services = setup
+    asha, rahul = login(client, "asha"), login(client, "rahul")
+    rid = dispute_of(services, "user_123")
+    assert client.post(f"/api/disputes/{rid}/resolve", json={"action": "refund", "amount": "999"}, headers=asha).status_code == 422
+    assert client.post(f"/api/disputes/{rid}/resolve", json={"action": "offer", "amount": "20"}, headers=asha).status_code == 422
+    res = client.post(f"/api/disputes/{rid}/resolve", json={"action": "refund", "amount": "20"}, headers=asha).json()
+    assert res["dispute"]["status"] == "WAITING_FOR_BUYER_RESPONSE" and res["seller_action"]["amount"]["value"] == "20.00"
     his = {i["dispute_id"]: i for i in client.get("/api/whats-new", headers=rahul).json()["items"] if i.get("dispute_id")}
-    assert his[rid].get("action_needed")                                    # now Rahul's turn
+    assert his[rid]["kind"] == "confirm_resolution" and his[rid]["seller_action"]["amount"]["value"] == "20.00"
 
 
 def test_disputes_stay_between_shop_and_customer(setup):
@@ -639,13 +641,10 @@ def test_only_the_shop_can_resolve(setup):
     assert client.post(f"/api/disputes/{rid}/resolve", json={"action": "refund"}, headers=login(client, "rahul")).status_code == 403
 
 
-def test_customer_sees_the_shops_offer_in_whats_new(setup):
-    client, _, services = setup
-    asha, rahul = login(client, "asha"), login(client, "rahul")
-    rid = dispute_of(services, "user_123")
-    client.post(f"/api/disputes/{rid}/resolve", json={"action": "offer", "amount": "20", "note": "Sorry for the delay"}, headers=asha)
-    item = next(i for i in client.get("/api/whats-new", headers=rahul).json()["items"] if i.get("dispute_id") == rid)
-    assert item["action_needed"] and item["offer"]["amount"]["value"] == "20.00" and item["offer"]["note"] == "Sorry for the delay"
+def test_offer_tools_are_switched_off():
+    for name in ("make_offer_to_resolve_dispute", "accept_offer_to_resolve_dispute", "deny_offer_to_resolve_dispute"):
+        card = REGISTRY.get(name)
+        assert card["disabled"] and card["allowed_roles"] == []
 
 
 # ---- dispute photos and replacements ------------------------------------------------------------
@@ -680,17 +679,18 @@ def test_photo_upload_checks_type_and_owner(setup):
                        files={"file": ("x.png", PHOTO, "image/png")}).status_code == 404
 
 
-def test_shop_resolves_with_a_replacement(setup):
+def test_shop_sends_a_replacement_customer_closes(setup):
     client, _, _ = setup
     rahul, asha = login(client, "rahul"), login(client, "asha")
     dispute_id = rahuls_dispute(client, rahul)
     missing = client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha, json={"action": "replacement", "carrier": "Blue Dart"})
     assert missing.status_code == 422
     r = client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha,
-                    json={"action": "replacement", "carrier": "Blue Dart", "tracking_number": "BD123456789IN"})
-    d = r.json()["dispute"]
-    assert d["status"] == "RESOLVED" and d["dispute_outcome"]["outcome_code"] == "RESOLVED_WITH_REPLACEMENT"
-    assert "BD123456789IN" in r.json()["messages"][-1]["text"]
+                    json={"action": "replacement", "carrier": "Blue Dart", "tracking_number": "BD123456789IN"}).json()
+    assert r["dispute"]["status"] == "WAITING_FOR_BUYER_RESPONSE" and r["seller_action"]["tracking_number"] == "BD123456789IN"
+    assert "BD123456789IN" in r["messages"][-1]["text"]
+    closed = client.post(f"/api/disputes/{dispute_id}/close", headers=rahul).json()["dispute"]
+    assert closed["dispute_outcome"]["outcome_code"] == "RESOLVED_WITH_REPLACEMENT" and closed["dispute_outcome"]["closed_by"] == "BUYER"
     assert client.post(f"/api/disputes/{dispute_id}/resolve", headers=rahul, json={"action": "replacement",
                        "carrier": "x" * 3, "tracking_number": "y" * 5}).status_code == 403  # customers can't
 
@@ -743,6 +743,32 @@ def test_shop_refund_tells_the_customer(setup):
     dispute_id = rahuls_dispute(client, rahul)
     client.post(f"/api/disputes/{dispute_id}/resolve", headers=asha, json={"action": "refund"})
     kinds = whats_new_kinds(client, rahul)
-    assert ("case_closed", dispute_id) in kinds and any(k == "refunded" for k, _ in kinds)
-    item = next(i for i in client.get("/api/whats-new", headers=rahul).json()["items"] if i["kind"] == "case_closed")
-    assert item["outcome"] == "refunded" and item["amount_refunded"]["value"] == "79.99"
+    assert ("confirm_resolution", dispute_id) in kinds and any(k == "refunded" for k, _ in kinds)
+    assert ("case_closed", dispute_id) not in whats_new_kinds(client, asha)   # still open: the customer closes it
+
+
+
+
+# ---- overdue invoices: the accountant sorts them out ----------------------------------------------
+
+def rahuls_overdue_invoice(services):
+    return invoice_where(services, status="SENT", email="rahul.sharma@example.com")["id"]
+
+
+def test_accountant_reminds_and_marks_an_overdue_invoice_paid(setup):
+    client, _, services = setup
+    asha, rahul = login(client, "asha"), login(client, "rahul")
+    inv = rahuls_overdue_invoice(services)
+    assert client.post(f"/api/invoices/{inv}/remind", headers=rahul).status_code == 403            # accountants only
+    assert client.post(f"/api/invoices/{inv}/remind", headers=asha).json()["reminders"]
+    paid = client.post(f"/api/invoices/{inv}/mark-paid", headers=asha, json={"method": "BANK_TRANSFER"}).json()
+    assert paid["status"] == "MARKED_AS_PAID" and paid["due_amount"]["value"] == "0.00"
+    assert not any(i["kind"] == "invoice_overdue" and i["invoice_id"] == inv
+                   for i in client.get("/api/whats-new", headers=asha).json()["items"])              # no longer overdue
+    assert client.post(f"/api/invoices/{inv}/remind", headers=asha).status_code == 409
+
+
+def test_accountant_cancels_an_invoice(setup):
+    client, _, services = setup
+    inv = rahuls_overdue_invoice(services)
+    assert client.post(f"/api/invoices/{inv}/cancel", headers=login(client, "asha")).json()["status"] == "CANCELLED"

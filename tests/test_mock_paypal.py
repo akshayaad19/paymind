@@ -188,15 +188,28 @@ def open_dispute_id(client, payer_id="user_123"):
     return next(d["dispute_id"] for d in items if d["disputed_transactions"][0]["buyer"]["payer_id"] == payer_id)
 
 
-def test_accept_claim_refunds_buyer(client):
+def test_accept_claim_refunds_buyer_who_then_closes(client):
     dispute_id = open_dispute_id(client)
     r = client.post(f"/v1/customer/disputes/{dispute_id}/accept-claim", json={"note": "Sorry about that"})
-    assert r.json()["status"] == "RESOLVED"
+    assert r.json()["status"] == "WAITING_FOR_BUYER_RESPONSE"         # the shop doesn't close the case
     dispute = client.get(f"/v1/customer/disputes/{dispute_id}").json()
-    assert dispute["dispute_outcome"]["outcome_code"] == "RESOLVED_BUYER_FAVOUR"
+    assert dispute["seller_action"]["type"] == "refund"
     assert client.get(f"/v2/payments/refunds/{dispute['refund_id']}").json()["amount"] == usd("79.99")
     again = client.post(f"/v1/customer/disputes/{dispute_id}/accept-claim", json={})
-    assert again.status_code == 422 and issue(again) == "DISPUTE_ALREADY_RESOLVED"
+    assert again.status_code == 422 and issue(again) == "NOTHING_TO_REFUND"
+    closed = client.post(f"/mock/disputes/{dispute_id}/close", json={}).json()
+    assert closed["status"] == "RESOLVED"
+    assert client.get(f"/v1/customer/disputes/{dispute_id}").json()["dispute_outcome"] == {
+        "outcome_code": "RESOLVED_BUYER_FAVOUR", "amount_refunded": usd("79.99"), "closed_by": "BUYER"}
+
+
+def test_accept_claim_can_refund_part(client):
+    dispute_id = open_dispute_id(client)
+    r = client.post(f"/v1/customer/disputes/{dispute_id}/accept-claim", json={"refund_amount": usd("20.00")})
+    assert r.status_code == 200
+    assert client.get(f"/v1/customer/disputes/{dispute_id}").json()["seller_action"]["amount"] == usd("20.00")
+    too_much = client.post(f"/v1/customer/disputes/{open_dispute_id(client)}/accept-claim", json={"refund_amount": usd("999.00")})
+    assert too_much.status_code == 422
 
 
 def test_offer_then_buyer_accepts(client):
@@ -345,7 +358,7 @@ def test_buyer_pays_a_sent_invoice(app, client):
     assert client.post(f"/mock/invoices/{draft['id']}/pay").status_code == 422
 
 
-def test_full_refund_of_a_disputed_payment_closes_the_dispute(tmp_path):
+def test_full_refund_of_a_disputed_payment_waits_for_the_customer(tmp_path):
     """Refunding the payment directly (not through the dispute) still resolves the dispute, like PayPal."""
     from decimal import Decimal
     from paymind.mock_paypal.app import create_app as make
@@ -359,8 +372,8 @@ def test_full_refund_of_a_disputed_payment_closes_the_dispute(tmp_path):
     capture = store.db.get("captures", capture["id"])
     rest = Decimal(capture["amount"]["value"]) - Decimal(capture["refunded_amount"]["value"])
     store.create_refund(capture, rest, "the rest")
-    closed = store.db.get("disputes", dispute["dispute_id"])
-    assert closed["status"] == "RESOLVED" and closed["dispute_outcome"]["outcome_code"] == "RESOLVED_BUYER_FAVOUR"
+    waiting = store.db.get("disputes", dispute["dispute_id"])        # the customer confirms and closes it
+    assert waiting["status"] == "WAITING_FOR_BUYER_RESPONSE" and waiting["seller_action"]["type"] == "refund"
 
 
 def test_sales_say_how_they_were_paid(tmp_path):

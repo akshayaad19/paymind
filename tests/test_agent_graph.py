@@ -314,9 +314,14 @@ def test_check_updates_uses_the_whats_new_summary(world):
 
 def test_nothing_new(world):
     mock, _, appdb = world
-    for d in mock.state.store.db.all("disputes"):     # the shop resolves every open dispute
+    from paymind.app.updates import mark_seen
+
+    asha = appdb.get_user("u_asha")
+    for d in mock.state.store.db.all("disputes"):     # every customer closes their case, and the shop has seen it
         if d["status"] != "RESOLVED":
-            world[1].execute("accept_claim", {"dispute_id": d["dispute_id"]}, caller=appdb.get_user("u_asha"))
+            world[1].client.post(f"http://testserver/mock/disputes/{d['dispute_id']}/close", json={})
+    for d in mock.state.store.db.all("disputes"):
+        mark_seen(appdb, asha, d)
     for inv in mock.state.store.db.all("invoices"):   # ...and every invoice is paid (none overdue)
         if inv["status"] in ("SENT", "UNPAID"):
             world[1].client.post(f"http://testserver/mock/invoices/{inv['id']}/pay")
@@ -566,14 +571,14 @@ def test_priyas_wrong_invoice_is_visible_in_the_data(world):
 
 
 def test_settling_priyas_dispute_refunds_only_the_extra_charger(world):
-    """accept_claim refunds the disputed $29.99 (not the whole $59.98) and closes the dispute."""
+    """accept_claim refunds the disputed $29.99 (not the whole $59.98); the case waits for Priya."""
     mock, executor, _ = world
     db = mock.state.store.db
     dispute = next(d for d in db.all("disputes") if d["reason"] == "INCORRECT_AMOUNT")
     assert executor.execute("accept_claim", {"dispute_id": dispute["dispute_id"]}).ok
     capture = db.get("captures", dispute["disputed_transactions"][0]["seller_transaction_id"])
     assert capture["refunded_amount"]["value"] == "29.99" and capture["status"] == "PARTIALLY_REFUNDED"
-    assert db.get("disputes", dispute["dispute_id"])["status"] == "RESOLVED"
+    assert db.get("disputes", dispute["dispute_id"])["status"] == "WAITING_FOR_BUYER_RESPONSE"   # Priya closes it
 
 
 # ---- streaming ------------------------------------------------------------------------------------

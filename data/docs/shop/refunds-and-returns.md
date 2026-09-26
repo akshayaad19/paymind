@@ -13,7 +13,7 @@ Refunds go back to the original PayPal payment. We issue the refund within **5 b
 If an item **delivered to you** (online store or invoice order) arrives damaged or doesn't work, tell us within 7 days of delivery and include a photo. We send a replacement or a full refund, and you don't have to return the item. For items bought at our store, see **In-store purchases** below.
 
 ## Partial refunds
-We offer a partial refund when an order arrives more than 5 days after the expected delivery date, or when an item is not as described but you'd like to keep it. The amount is agreed with you before it's issued.
+We give a partial refund when an order arrives more than 5 days after the expected delivery date, or when an item is not as described but you'd like to keep it. We refund you directly; if you think the amount isn't right, reply in the dispute before closing it.
 
 ## In-store purchases
 Items bought and paid for at our store (at the till) are checked with you at the counter before you take them. Because of that, problems reported afterwards are handled differently from online orders:

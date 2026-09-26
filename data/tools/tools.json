@@ -8185,7 +8185,7 @@
     "subcategory": null,
     "method": "POST",
     "path": "/v1/customer/disputes/{dispute_id}/accept-claim",
-    "description": "Concede a customer dispute by accepting liability, which closes the case and automatically issues a refund to the buyer.",
+    "description": "Settle a customer's dispute by refunding them: the full disputed amount, or a partial amount (refund_amount). The money goes back at once; the case then waits for the customer to confirm and close it. Use this to refund any payment that has an open dispute.",
     "parameters": {
       "type": "object",
       "properties": {
@@ -8204,6 +8204,19 @@
         "accept_claim_type": {
           "type": "string",
           "x-in": "body"
+        },
+        "refund_amount": {
+          "type": "object",
+          "x-in": "body",
+          "description": "Refund less than the disputed amount (partial refund). Leave out to refund the full disputed amount.",
+          "properties": {
+            "currency_code": {
+              "type": "string"
+            },
+            "value": {
+              "type": "string"
+            }
+          }
         }
       },
       "required": [
@@ -8218,10 +8231,10 @@
     "action_type": "write",
     "supports_idempotency": true,
     "example_questions": [
-      "I want to accept the claim for case PP-D-882",
-      "Let's concede dispute DP-901 and refund the buyer",
-      "Admit liability for case 48201 so the customer gets their money back",
-      "Just close dispute 77301 by accepting the claim"
+      "Refund Rahul in full for dispute PP-D-38106.",
+      "Give the customer $20 back on their dispute.",
+      "Settle the charged-twice case by refunding the extra payment.",
+      "We agree with the buyer, refund them."
     ],
     "allowed_roles": [
       "accountant"
@@ -8443,9 +8456,7 @@
       "Send a resolution proposal to the customer for case 7741",
       "Can we offer a full refund to settle case 2210?"
     ],
-    "allowed_roles": [
-      "accountant"
-    ],
+    "allowed_roles": [],
     "enrichment_status": "ok",
     "requires_confirmation": true,
     "eval_only": false,
@@ -8461,7 +8472,9 @@
       },
       "offer_type": "REFUND_WITH_REPLACEMENT"
     },
-    "call_example_status": "ok"
+    "call_example_status": "ok",
+    "disabled": true,
+    "disabled_reason": "PayMind has no offers: a refund is never something the customer can decline. The shop refunds (full or partial) or sends a replacement, and the customer closes the case."
   },
   {
     "name": "provide_evidence",
@@ -8706,9 +8719,7 @@
       "Accept the offer to resolve my open dispute 33102",
       "Yes, I accept their partial refund offer for case 8812"
     ],
-    "allowed_roles": [
-      "customer"
-    ],
+    "allowed_roles": [],
     "enrichment_status": "ok",
     "requires_confirmation": true,
     "eval_only": false,
@@ -8720,7 +8731,9 @@
       "dispute_id": "PP-D-27803",
       "note": "I am ok with the refund offered."
     },
-    "call_example_status": "ok"
+    "call_example_status": "ok",
+    "disabled": true,
+    "disabled_reason": "PayMind has no offers: a refund is never something the customer can decline. The shop refunds (full or partial) or sends a replacement, and the customer closes the case."
   },
   {
     "name": "send_message_about_dispute_to_other_party",
@@ -8813,9 +8826,7 @@
       "I don't accept the store credit offer for case DIS-3321",
       "Refuse the seller's resolution offer for my open dispute"
     ],
-    "allowed_roles": [
-      "customer"
-    ],
+    "allowed_roles": [],
     "enrichment_status": "ok",
     "requires_confirmation": true,
     "eval_only": false,
@@ -8827,7 +8838,9 @@
       "dispute_id": "PP-D-27803",
       "note": "refund offer is very low."
     },
-    "call_example_status": "ok"
+    "call_example_status": "ok",
+    "disabled": true,
+    "disabled_reason": "PayMind has no offers: a refund is never something the customer can decline. The shop refunds (full or partial) or sends a replacement, and the customer closes the case."
   },
   {
     "name": "partially_update_dispute",

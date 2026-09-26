@@ -14,6 +14,7 @@ checked on the server for every call; the web page only decides what to show.
   GET  /api/paypal/transactions accountant only: transactions for a day / week / month, with totals
   GET  /api/invoices/{id}/pdf   download an invoice as PDF (own invoices only for customers)
   POST /api/invoices/{id}/send  accountants: send a draft invoice to its recipient
+  POST /api/invoices/{id}/remind | /mark-paid | /cancel   accountants sort out unpaid (e.g. overdue) invoices
   POST /api/pos/read            customers: upload a PO (photo/scan, often handwritten); the AI reads it into a draft
   POST /api/pos, PUT /api/pos/{id}, POST /api/pos/{id}/submit   customers: type / edit / send a PO
   GET  /api/pos, /api/pos/{id}, /api/pos/{id}/document         own POs (customers) or all sent POs (accountants)
@@ -23,7 +24,7 @@ checked on the server for every call; the web page only decides what to show.
   POST /api/pos/{id}/delivered | /not-received   customers confirm delivery or report it missing
   GET  /api/disputes/{id}       a dispute and its message thread (own disputes only for customers)
   POST /api/disputes/{id}/messages  send a message to the other side of the dispute
-  POST /api/disputes/{id}/resolve   accountants: refund, offer a partial refund, or send a replacement
+  POST /api/disputes/{id}/resolve   accountants: refund (full or partial) or send a replacement; the customer then closes the case
   POST /api/disputes/{id}/photos    attach a photo to a dispute (e.g. the broken item); GET …/photos/{photo_id}
   POST /api/disputes/{id}/close     customers: close their own case as resolved (the shop is told)
   POST /api/disputes/{id}/tracking  accountants: record a shipment (carrier, tracking number, status) for the disputed payment
@@ -149,8 +150,8 @@ class POReject(BaseModel):
 
 
 class ResolveIn(BaseModel):
-    action: str = Field(pattern="^(refund|offer|replacement)$")
-    amount: str | None = None                                  # offer: the partial refund offered
+    action: str = Field(pattern="^(refund|replacement)$")
+    amount: str | None = None                                  # refund: less than the disputed amount (partial)
     note: str | None = Field(default=None, max_length=1000)
     carrier: str | None = Field(default=None, max_length=60)          # replacement: how it's sent
     tracking_number: str | None = Field(default=None, max_length=60)
@@ -164,6 +165,11 @@ class TrackingIn(BaseModel):
 
 PHOTO_TYPES = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp", "image/heic": ".heic"}
 PHOTO_MAX_BYTES = 8 * 1024 * 1024
+
+
+class MarkPaidIn(BaseModel):
+    method: str = Field(default="BANK_TRANSFER", pattern="^(BANK_TRANSFER|CASH|CHECK|OTHER)$")
+    note: str | None = Field(default=None, max_length=500)
 
 
 class ConfirmIn(BaseModel):
@@ -322,6 +328,39 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         number = re.sub(r"[^A-Za-z0-9_-]", "", (invoice.get("detail") or {}).get("invoice_number") or invoice_id)
         return Response(invoice_pdf(invoice), media_type="application/pdf",
                         headers={"Content-Disposition": f'attachment; filename="{number or "invoice"}.pdf"'})
+
+    def unpaid_invoice_action(user: User, invoice_id: str, tool: str, params: dict, done: str) -> dict:
+        """Run one accountant action on an unpaid invoice, log it, and return the invoice as it is now."""
+        invoice = own_invoice(user, invoice_id)
+        if invoice["status"] not in ("SENT", "UNPAID", "PARTIALLY_PAID"):
+            raise HTTPException(409, "This invoice isn't waiting for payment.")
+        card = services.registry.get(tool) or {}
+        result = services.executor.execute(tool, {"invoice_id": invoice_id, **params}, caller=user)
+        services.appdb.log_action(user, tool, {"invoice_id": invoice_id, **params}, "success" if result.ok else "failed",
+                                  method=card.get("method"), path=card.get("path"), http_status=result.status_code,
+                                  result_summary=(result.error or done)[:300], confirmed=True, request_id=result.request_id)
+        if not result.ok:
+            raise HTTPException(422 if result.status_code == 422 else 502, result.error)
+        return own_invoice(user, invoice_id)
+
+    @app.post("/api/invoices/{invoice_id}/remind", tags=["invoices"])
+    def remind_invoice(invoice_id: str, user: User = Depends(require_role("accountant"))):
+        """Send the customer a payment reminder."""
+        return unpaid_invoice_action(user, invoice_id, "send_invoice_reminder",
+                                     {"note": "A friendly reminder that this invoice is due. Thank you!"}, f"reminder sent for {invoice_id}")
+
+    @app.post("/api/invoices/{invoice_id}/mark-paid", tags=["invoices"])
+    def mark_invoice_paid(invoice_id: str, body: MarkPaidIn, user: User = Depends(require_role("accountant"))):
+        """The customer paid another way (bank transfer, cash...): record it, and the invoice is settled."""
+        params = {"method": body.method, "payment_date": datetime.now(timezone.utc).date().isoformat(),
+                  **({"note": body.note} if body.note else {})}
+        return unpaid_invoice_action(user, invoice_id, "record_payment_for_invoice", params,
+                                     f"{invoice_id} marked as paid ({body.method.lower().replace('_', ' ')})")
+
+    @app.post("/api/invoices/{invoice_id}/cancel", tags=["invoices"])
+    def cancel_invoice(invoice_id: str, user: User = Depends(require_role("accountant"))):
+        """Cancel an invoice that shouldn't be paid (e.g. sent by mistake)."""
+        return unpaid_invoice_action(user, invoice_id, "cancel_sent_invoice", {}, f"{invoice_id} cancelled")
 
     @app.post("/api/invoices/{invoice_id}/send", tags=["invoices"])
     def send_invoice(invoice_id: str, user: User = Depends(require_role("accountant"))):
@@ -565,7 +604,7 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         return {"dispute": dispute, "messages": messages, "photos": photos, "purchase": purchase,
                 "can_reply": dispute.get("status") != "RESOLVED",
                 "can_resolve": dispute.get("status") in ("WAITING_FOR_SELLER_RESPONSE", "OPEN"),
-                "offer": dispute.get("offer")}
+                "seller_action": dispute.get("seller_action")}
 
     @app.get("/api/disputes/{dispute_id}", tags=["disputes"])
     def open_dispute(dispute_id: str, user: User = Depends(current_user)):
@@ -673,6 +712,8 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
         dispute = own_dispute(user, dispute_id)
         if dispute.get("status") == "RESOLVED":
             raise HTTPException(409, "This dispute is already resolved.")
+        if dispute.get("status") not in ("WAITING_FOR_SELLER_RESPONSE", "OPEN"):
+            raise HTTPException(409, "You've already acted on this case; it's waiting for the customer to confirm.")
         note = (body.note or "").strip() or None
         if body.action == "replacement":
             carrier, tracking = (body.carrier or "").strip(), (body.tracking_number or "").strip()
@@ -690,19 +731,17 @@ def create_app(services: Services | None = None, jwt_secret: str | None = None) 
             if not ok:
                 raise HTTPException(502, "Couldn't record the replacement. Please try again.")
             return conversation(own_dispute(user, dispute_id))
-        if body.action == "refund":
-            tool, params = "accept_claim", {"dispute_id": dispute_id, **({"note": note} if note else {})}
-        elif body.action == "offer":
+        # refund: the full disputed amount, or a partial amount the shop chooses (no offers: the
+        # customer can't decline a refund). The case then waits for the customer to close it.
+        tool, params = "accept_claim", {"dispute_id": dispute_id, **({"note": note} if note else {})}
+        if body.amount:
             try:
-                amount = Decimal(str(body.amount or "0"))
+                amount = Decimal(str(body.amount)).quantize(Decimal("0.01"))
             except Exception:
-                raise HTTPException(422, "The offer amount must be a number.")
+                raise HTTPException(422, "The refund amount must be a number.")
             if amount <= 0 or amount > Decimal(dispute["dispute_amount"]["value"]):
-                raise HTTPException(422, f"Offer between 0.01 and the disputed {dispute['dispute_amount']['value']}.")
-            tool, params = "make_offer_to_resolve_dispute", {
-                "dispute_id": dispute_id, "offer_type": "REFUND",
-                "offer_amount": {"currency_code": dispute["dispute_amount"]["currency_code"], "value": f"{amount:.2f}"},
-                **({"note": note} if note else {})}
+                raise HTTPException(422, f"Refund between 0.01 and the disputed {dispute['dispute_amount']['value']}.")
+            params["refund_amount"] = {"currency_code": dispute["dispute_amount"]["currency_code"], "value": f"{amount:.2f}"}
         card = services.registry.get(tool) or {}
         result = services.executor.execute(tool, params, caller=user)
         services.appdb.log_action(user, tool, params, "success" if result.ok else "failed", method=card.get("method"),

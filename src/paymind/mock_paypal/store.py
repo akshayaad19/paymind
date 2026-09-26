@@ -140,16 +140,15 @@ class Store:
         return refund
 
     def close_disputes_on(self, capture_id: str, refund_id: str, when) -> None:
-        """A payment refunded in full leaves nothing to dispute: like PayPal, its open disputes close
-        in the buyer's favour (whichever way the refund was made)."""
+        """A payment refunded in full, however it was done: its open cases record the refund and wait
+        for the customer to confirm (in PayMind only the customer closes a case)."""
         for dispute in self.db.all("disputes"):
             tx = (dispute.get("disputed_transactions") or [{}])[0]
             if tx.get("seller_transaction_id") != capture_id or dispute.get("status") == "RESOLVED":
                 continue
-            dispute.update(status="RESOLVED", dispute_state="RESOLVED", refund_id=refund_id, update_time=iso(when),
-                           dispute_outcome={"outcome_code": "RESOLVED_BUYER_FAVOUR", "amount_refunded": dispute["dispute_amount"],
-                                            "closed_by": "SELLER"})
             dispute.pop("offer", None)
+            dispute["seller_action"] = {"type": "refund", "amount": dispute["dispute_amount"], "refund_id": refund_id, "time": iso(when)}
+            dispute.update(status="WAITING_FOR_BUYER_RESPONSE", dispute_state="REQUIRED_OTHER_PARTY_ACTION", update_time=iso(when))
             self.db.put("disputes", dispute)
 
     def balance(self) -> Decimal:

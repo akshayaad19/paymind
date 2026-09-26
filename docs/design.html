@@ -4,212 +4,408 @@
 <meta charset="utf-8">
 <title>PayMind Design</title>
 <style>
-  @page { size: A4; margin: 16mm 15mm 16mm 15mm; }
-  :root { --ink: #1b1e2e; --muted: #5d6275; --line: #d9dce6; --soft: #f4f5fa; --accent: #5b5bd6; --accent-soft: #ecebfd; --ok: #1a7f4b; --warn: #b4540a; }
+  @page { size: A4; margin: 15mm 14mm 15mm 14mm; }
+  :root { --ink:#18203a; --muted:#5b6275; --line:#dde0ea; --soft:#f5f6fb; --accent:#4f46e5; --accent-soft:#eef0ff; --green:#0f7a4b; --green-soft:#e9f7f0; --amber:#a15c07; --amber-soft:#fff5e6; --rose:#b42347; --rose-soft:#fdeef2; }
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); font-size: 10.2pt; line-height: 1.45; margin: 0; }
-  h1 { font-size: 22pt; margin: 0 0 2mm; letter-spacing: -0.01em; }
-  h2 { font-size: 13.5pt; margin: 7mm 0 2.5mm; padding-bottom: 1.2mm; border-bottom: 2px solid var(--accent); break-after: avoid; }
+  body { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); font-size: 10pt; line-height: 1.5; margin: 0; }
+  h1 { font-size: 26pt; line-height: 1.15; margin: 0 0 2mm; letter-spacing: -0.02em; }
+  h2 { font-size: 14pt; margin: 0 0 3mm; padding: 2mm 0 1.5mm; border-bottom: 2px solid var(--accent); break-after: avoid; display: flex; gap: 3mm; align-items: baseline; }
+  h2 .n { color: var(--accent); font-weight: 800; }
   h3 { font-size: 11pt; margin: 4mm 0 1.5mm; break-after: avoid; }
-  p { margin: 0 0 2.2mm; }
-  ul { margin: 0 0 2.5mm; padding-left: 5mm; }
-  li { margin: 0.6mm 0; }
-  .sub { color: var(--muted); font-size: 10.5pt; margin-bottom: 4mm; }
-  .meta { display: flex; gap: 6mm; flex-wrap: wrap; font-size: 9pt; color: var(--muted); margin-bottom: 5mm; }
-  .meta b { color: var(--ink); }
-  table { width: 100%; border-collapse: collapse; margin: 1.5mm 0 3mm; font-size: 9.2pt; break-inside: avoid; }
-  th, td { text-align: left; padding: 1.6mm 2mm; border-bottom: 1px solid var(--line); vertical-align: top; }
-  th { background: var(--soft); font-weight: 600; }
-  td.num, th.num { text-align: right; white-space: nowrap; }
-  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 8.6pt; background: var(--soft); padding: 0.2mm 1mm; border-radius: 1mm; }
-  .box { border: 1px solid var(--line); background: var(--soft); border-radius: 2mm; padding: 2.5mm 3.5mm; margin: 2mm 0 3mm; break-inside: avoid; }
-  .key { border-left: 3px solid var(--accent); background: var(--accent-soft); }
-  .fig { margin: 2mm 0 3mm; break-inside: avoid; }
-  .fig svg { width: 100%; height: auto; display: block; }
-  .cap { font-size: 8.6pt; color: var(--muted); margin-top: 1mm; }
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+  p { margin: 0 0 2.4mm; }
+  ul { margin: 0 0 2.5mm; padding-left: 5mm; } li { margin: 0.7mm 0; }
+  section { margin-bottom: 6mm; }
   .page { break-before: page; }
-  .good { color: var(--ok); font-weight: 600; }
+  .lead { font-size: 11.5pt; color: var(--muted); margin: 0 0 5mm; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm; margin: 5mm 0; }
+  .kpi { border: 1px solid var(--line); border-radius: 3mm; padding: 3mm 3.5mm; background: #fff; }
+  .kpi b { display: block; font-size: 17pt; color: var(--accent); line-height: 1.1; }
+  .kpi span { font-size: 8.6pt; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; margin: 1.5mm 0 3.5mm; font-size: 9pt; break-inside: auto; }
+  tr { break-inside: avoid; }
+  th, td { text-align: left; padding: 1.5mm 2mm; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { background: var(--soft); font-weight: 650; font-size: 8.8pt; }
+  td.layer { font-weight: 650; white-space: nowrap; color: var(--accent); }
+  td.num, th.num { text-align: right; white-space: nowrap; }
+  code { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 8.3pt; background: var(--soft); padding: 0.2mm 1mm; border-radius: 1mm; }
+  .box { border-radius: 2.5mm; padding: 3mm 4mm; margin: 2mm 0 3.5mm; break-inside: avoid; }
+  .key { background: var(--accent-soft); border-left: 3px solid var(--accent); }
+  .ok { background: var(--green-soft); border-left: 3px solid var(--green); }
+  .fig { margin: 2mm 0 4mm; break-inside: avoid; }
+  .fig svg { width: 100%; height: auto; display: block; }
+  .cap { font-size: 8.5pt; color: var(--muted); margin-top: 1.2mm; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+  .tag { display: inline-block; font-size: 7.8pt; font-weight: 700; padding: 0.3mm 1.6mm; border-radius: 1mm; background: var(--soft); color: var(--muted); }
+  .good { color: var(--green); font-weight: 700; }
+  .toc { columns: 2; font-size: 9.5pt; margin: 0 0 4mm; padding-left: 5mm; }
+  .toc li { margin: 0.8mm 0; }
   svg text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
 </style>
 </head>
 <body>
 
-<h1>PayMind: a scalable tool-calling agent for PayPal</h1>
-<div class="sub">Design document · Datazoic programming task</div>
-<div class="meta">
-  <span><b>Author</b> Akshayaa D</span>
-  <span><b>Code</b> github.com/akshayaad19/paymind</span>
-  <span><b>Stack</b> LangGraph · Gemini · Qdrant (hybrid search) · FastAPI · LangSmith</span>
+<div style="margin-top:4mm">
+  <span class="tag">DESIGN DOCUMENT · DATAZOIC PROGRAMMING TASK</span>
+  <h1 style="margin-top:3mm">PayMind</h1>
+  <div style="font-size:15pt;font-weight:600;margin-bottom:3mm">A scalable tool-calling agent for PayPal</div>
+  <p class="lead">Users ask in plain English. The agent finds the right PayPal API among many, fills in the parameters,
+  lets <b>code</b> check the call, asks the user before anything changes, runs it, and shows what really happened.
+  Every step is traced in LangSmith.</p>
+  <div style="font-size:9pt;color:var(--muted)">Akshayaa D · github.com/akshayaad19/paymind · September 2026</div>
+</div>
+
+<div class="kpis">
+  <div class="kpi"><b>112</b><span>PayPal APIs as searchable tool cards, from the Postman collection</span></div>
+  <div class="kpi"><b>100%</b><span>right tool in the top 5 at <b>1,012 tools</b> (with 900 look-alike distractors)</span></div>
+  <div class="kpi"><b>~20 ms</b><span>per tool search (hybrid BM25 + dense, RRF)</span></div>
+  <div class="kpi"><b>234</b><span>automated tests, run without any LLM</span></div>
 </div>
 
 <div class="box key">
-  <b>In one paragraph.</b> PayMind turns the PayPal Postman collection into <b>112 searchable tool cards</b> and lets a
-  single LangGraph agent use them from plain English. Instead of giving the model every tool, each message first runs a
-  <b>role-filtered hybrid search</b> (BM25 + dense vectors, merged with RRF) and offers the model only the <b>top 5</b>, plus
-  a few always-available built-ins, including the required <b>RAG pipeline tool</b> and <b>System Search tool</b>. Every
-  call the model proposes goes through <b>code</b> (validation, permissions, confirmation for writes) before it runs, and
-  every step is traced in <b>LangSmith</b>. Measured on 1,012 tools (112 real + 900 deliberately confusing look-alikes),
-  the right tool stays in the top 5 for <b>100% of test questions</b> at about <b>20 ms</b> per search.
+  <b>The idea in one line.</b> The model never sees every tool: each message runs a <b>role-filtered hybrid search</b>
+  and offers only the <b>top 5</b> tools plus a few built-ins (including the <b>RAG pipeline tool</b> and the
+  <b>System Search tool</b>). The prompt stays the same size whether there are 100 or 10,000 tools, and everything
+  with a right answer (permissions, amounts, IDs, confirmation) is decided by code, not by the model.
 </div>
 
-<h2>1. What the brief asked for, and where it is</h2>
+<h3>Contents</h3>
+<ol class="toc">
+  <li>What the brief asked for</li>
+  <li>Tech stack</li>
+  <li>System architecture</li>
+  <li>Life of one message</li>
+  <li>Agent structure</li>
+  <li>Tool selection and routing</li>
+  <li>RAG pipeline and System Search</li>
+  <li>State and memory</li>
+  <li>Error handling and safety</li>
+  <li>Observability: what the traces show</li>
+  <li>Scalability: measured</li>
+  <li>Scaling to thousands of customers</li>
+  <li>Why these choices</li>
+  <li>Limitations and next steps</li>
+</ol>
+
+<section>
+<h2><span class="n">1</span> What the brief asked for, and where it is</h2>
 <table>
-  <tr><th style="width:34%">Requirement</th><th>How PayMind meets it</th></tr>
-  <tr><td>Agentic system over the PayPal Postman collection (50+ APIs)</td><td>112 requests parsed and enriched into tool cards; a mock PayPal server runs them (30 endpoints with real state in SQLite, the rest replay PayPal's example responses).</td></tr>
-  <tr><td>"Send an invoice for $50 to…"</td><td>Agent chains <code>create_draft_invoice</code> → <code>send_invoice</code>; both confirmed by the user; tested live.</td></tr>
-  <tr><td>"Total sales volume last month?"</td><td><code>list_transactions</code> over the date range; the model sums the sales.</td></tr>
-  <tr><td>"Dispute open from user_123?"</td><td><code>list_disputes</code>, then results are filtered to what the caller may see.</td></tr>
-  <tr><td>RAG Pipeline Tool</td><td><code>rag_search</code>: 15 policy documents (shop + PayPal) → 336 chunks → hybrid search + cross-encoder reranker; answers only from the passages, with citations.</td></tr>
-  <tr><td>System Search Tool</td><td><code>system_search</code>: what the assistant can do (searches the tool index) and the user's own recent activity (audit log); <code>find_tools</code> searches the whole catalogue.</td></tr>
-  <tr><td>Scale from 100+ to 1000s of tools</td><td>Retrieval-first tool selection (§4), measured at 112 / 512 / 1,012 tools (§8).</td></tr>
-  <tr><td>Framework choice, observability</td><td>LangGraph, justified in §9; LangSmith traces every node, search, validation and API call (§7).</td></tr>
-  <tr><td>Agent structure, routing, state, scalability, error handling</td><td>§3, §4, §5, §8, §6.</td></tr>
+  <tr><th style="width:32%">Requirement</th><th>In PayMind</th><th style="width:9%">Section</th></tr>
+  <tr><td>Agentic system over the PayPal Postman collection (50+ APIs)</td><td>112 requests parsed and enriched into tool cards; a mock PayPal server answers them (30 endpoints with real state in SQLite; the rest replay PayPal's own example responses).</td><td>3, 6</td></tr>
+  <tr><td>"Send an invoice for $50 to…"</td><td><code>create_draft_invoice</code> → <code>send_invoice</code>, each confirmed by the user.</td><td>4, 5</td></tr>
+  <tr><td>"Total sales volume last month?"</td><td><code>list_transactions</code> for the date range; the model adds up the sales.</td><td>6</td></tr>
+  <tr><td>"Is there a dispute open from user_123?"</td><td><code>list_disputes</code>; results filtered to what the caller may see.</td><td>6, 9</td></tr>
+  <tr><td>RAG Pipeline Tool</td><td><code>rag_search</code> over 15 policy documents → 336 chunks → hybrid search + cross-encoder reranker; answers only from passages, with citations.</td><td>7</td></tr>
+  <tr><td>System Search Tool</td><td><code>system_search</code> (capabilities + the user's own activity) and <code>find_tools</code> (whole catalogue).</td><td>7</td></tr>
+  <tr><td>Scale from 100+ to 1000s of tools</td><td>Retrieval-first tool selection, measured at 112 / 512 / 1,012 tools.</td><td>6, 11</td></tr>
+  <tr><td>Agent structure · routing · state · scalability · error handling</td><td>One LangGraph ReAct agent with code nodes around the LLM.</td><td>5, 6, 8, 9, 12</td></tr>
+  <tr><td>Framework choice · observability</td><td>LangGraph (justified) · LangSmith traces with custom spans.</td><td>10, 13</td></tr>
 </table>
-<p>Beyond the brief, the demo is a working <b>seller's portal</b> for one shop: an accountant (Asha) and customers (Rahul,
-Priya) log in (JWT), chat with the agent, handle disputes end to end (messages, photos, refunds, replacements, tracking)
-and purchase orders (including handwritten ones read by Gemini). 231 automated tests run without any LLM.</p>
+<p style="font-size:9.3pt;color:var(--muted)">Beyond the brief, the demo is a working seller's portal for one shop: an accountant and customers log in, chat with
+the agent, handle disputes end to end (messages, photos, refund or replacement, shipment tracking; only the customer closes a
+case), chase overdue invoices, and turn handwritten purchase orders into invoices and deliveries.</p>
+</section>
 
-<h2>2. Architecture</h2>
+<section class="page">
+<h2><span class="n">2</span> Tech stack</h2>
+<table>
+  <tr><th style="width:15%">Layer</th><th style="width:27%">Technology</th><th>Used for</th></tr>
+  <tr><td class="layer">LLM</td><td>Google <b>Gemini</b> (3.8 Flash, falling back to 3.6 / 3.5 Flash / Flash-Lite) via <code>langchain-google-genai</code></td><td>Choosing and filling tool calls, answers, writing messages; <b>multimodal</b> reading of handwritten purchase orders into a Pydantic form. Also the offline enricher.</td></tr>
+  <tr><td class="layer">Agent</td><td><b>LangGraph</b> <code>StateGraph</code>, <code>interrupt()</code>, <code>stream_mode="messages"</code>; <code>langchain-core</code> messages</td><td>The ReAct loop as 4 nodes, pausing for human approval, streaming the answer token by token.</td></tr>
+  <tr><td class="layer">State</td><td>LangGraph <b>SqliteSaver</b> checkpointer</td><td>Agent state and chat memory per user and session; resume after a Yes/No.</td></tr>
+  <tr><td class="layer">Vector DB</td><td><b>Qdrant Cloud</b> (free tier); in-memory Qdrant for tests and evaluation</td><td>Two collections: <code>tools</code> (112) and <code>docs</code> (336). Sparse + dense vectors, server-side RRF, payload indexes and filters (role).</td></tr>
+  <tr><td class="layer">Embeddings</td><td><b>fastembed</b> (ONNX, local): <code>BAAI/bge-small-en-v1.5</code> (384-d, cosine) and <code>Qdrant/bm25</code> (sparse, IDF)</td><td>Meaning search and keyword search, computed locally: no embedding API cost.</td></tr>
+  <tr><td class="layer">Reranker</td><td>Cross-encoder <code>Xenova/ms-marco-MiniLM-L-12-v2</code> (fastembed)</td><td>Re-orders the top 20 policy chunks by reading question and chunk together.</td></tr>
+  <tr><td class="layer">Ingestion</td><td>Postman collection v2.1 parser (own code) · <code>langchain-text-splitters</code> · <code>trafilatura</code></td><td>API cards from Postman; policy pages fetched as clean Markdown, split by heading then 2,000 characters.</td></tr>
+  <tr><td class="layer">Validation</td><td><b>Pydantic v2</b>, <code>jsonschema</code></td><td>Enricher output, tool parameters (JSON Schema), request bodies, PO extraction.</td></tr>
+  <tr><td class="layer">API</td><td><b>FastAPI</b> + Uvicorn, <b>Server-Sent Events</b></td><td>REST endpoints for the web app; streamed chat answers.</td></tr>
+  <tr><td class="layer">Auth</td><td><b>PyJWT</b> (HS256), <code>hashlib.scrypt</code></td><td>Login tokens with a version (logout revokes copies); salted password hashes; role read from the database on every request.</td></tr>
+  <tr><td class="layer">PayPal calls</td><td><b>httpx</b> executor</td><td>Builds path / query / body from each card, retries with backoff, reuses the <code>PayPal-Request-Id</code> (idempotency).</td></tr>
+  <tr><td class="layer">PayPal (mock)</td><td>FastAPI + <b>SQLite</b></td><td>Real request/response shapes; one transaction per request; idempotency replay; failure injection for tests.</td></tr>
+  <tr><td class="layer">App data</td><td><b>SQLite</b></td><td>Users, audit log, purchase orders, refund/replacement requests, dispute photos, read markers.</td></tr>
+  <tr><td class="layer">Front end</td><td>Plain HTML / CSS / JavaScript</td><td>Chat (streaming reader), account data with customer filter, orders, audit log; light and dark mode.</td></tr>
+  <tr><td class="layer">Documents</td><td><code>fpdf2</code></td><td>Invoice PDFs.</td></tr>
+  <tr><td class="layer">Observability</td><td><b>LangSmith</b> (<code>@traceable</code> spans + LangGraph auto-tracing)</td><td>One trace per message; custom spans for tool search, validation, PayPal calls and RAG (section 10).</td></tr>
+  <tr><td class="layer">Testing</td><td><b>pytest</b>, FastAPI <code>TestClient</code>, <code>httpx.MockTransport</code>, a scripted fake LLM</td><td>234 tests across parser, enricher, index, mock, executor, validator, agent graph, API and RAG, with no LLM calls.</td></tr>
+</table>
+</section>
+
+<section class="page">
+<h2><span class="n">3</span> System architecture</h2>
 <div class="fig">
-<svg viewBox="0 0 900 430" xmlns="http://www.w3.org/2000/svg">
+<svg id="f1" viewBox="0 0 900 470" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5d6275"/></marker>
-    <style>.b{fill:#fff;stroke:#b9bdd0;stroke-width:1.2;rx:8}.p{fill:#ecebfd;stroke:#5b5bd6;stroke-width:1.4}.s{fill:#f4f5fa;stroke:#b9bdd0}.t{font-size:12.5px;fill:#1b1e2e;font-weight:600}.d{font-size:10.5px;fill:#5d6275}.l{font-size:11px;fill:#5b5bd6;font-weight:700;letter-spacing:.06em}.e{stroke:#5d6275;stroke-width:1.3;fill:none;marker-end:url(#a)}.dash{stroke-dasharray:4 3}</style>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5b6275"/></marker>
+    <style>#f1 .bx{fill:#fff;stroke:#c3c7d6;stroke-width:1.2}#f1 .hl{fill:#eef0ff;stroke:#4f46e5;stroke-width:1.5}#f1 .zone{fill:#f5f6fb;stroke:#dde0ea}#f1 .t{font-size:12.5px;fill:#18203a;font-weight:650}#f1 .d{font-size:10.3px;fill:#5b6275}#f1 .z{font-size:10.5px;fill:#4f46e5;font-weight:800;letter-spacing:.07em}#f1 .e{stroke:#5b6275;stroke-width:1.3;fill:none;marker-end:url(#ar)}#f1 .ds{stroke-dasharray:4 3}</style>
   </defs>
-  <!-- offline -->
-  <rect x="10" y="8" width="880" height="140" rx="10" class="s"/>
-  <text x="24" y="28" class="l">OFFLINE · ONCE, WHEN THE API CATALOGUE CHANGES</text>
-  <rect x="24" y="40" width="150" height="46" rx="8" class="b"/><text x="36" y="59" class="t">Postman collection</text><text x="36" y="75" class="d">PayPal, 112 requests</text>
-  <rect x="200" y="40" width="130" height="46" rx="8" class="b"/><text x="212" y="59" class="t">Parser (code)</text><text x="212" y="75" class="d">params, path/query/body</text>
-  <rect x="356" y="40" width="200" height="46" rx="8" class="b"/><text x="368" y="59" class="t">Enricher (Gemini)</text><text x="368" y="75" class="d">description, examples, roles, r/w</text>
-  <rect x="582" y="40" width="130" height="46" rx="8" class="b"/><text x="594" y="59" class="t">tools.json</text><text x="594" y="75" class="d">checked, in git</text>
-  <rect x="738" y="40" width="140" height="46" rx="8" class="p"/><text x="750" y="59" class="t">Qdrant "tools"</text><text x="750" y="75" class="d">BM25 + dense vectors</text>
-  <path d="M174 63 H198" class="e"/><path d="M330 63 H354" class="e"/><path d="M556 63 H580" class="e"/><path d="M712 63 H736" class="e"/>
-  <rect x="24" y="96" width="210" height="44" rx="8" class="b"/><text x="36" y="114" class="t">Policy documents</text><text x="36" y="130" class="d">5 shop + 10 PayPal pages</text>
-  <rect x="260" y="96" width="250" height="44" rx="8" class="b"/><text x="272" y="114" class="t">Split by heading → 2,000 chars</text><text x="272" y="130" class="d">title + section kept with each chunk</text>
-  <rect x="738" y="96" width="140" height="44" rx="8" class="p"/><text x="750" y="114" class="t">Qdrant "docs"</text><text x="750" y="130" class="d">336 chunks</text>
-  <path d="M234 118 H258" class="e"/><path d="M510 118 H736" class="e"/>
-
-  <!-- online -->
-  <rect x="10" y="160" width="880" height="262" rx="10" class="s"/>
-  <text x="24" y="180" class="l">ONLINE · EVERY MESSAGE</text>
-  <rect x="24" y="200" width="118" height="54" rx="8" class="b"/><text x="36" y="222" class="t">Web app</text><text x="36" y="238" class="d">chat, data, orders</text>
-  <rect x="166" y="200" width="138" height="54" rx="8" class="b"/><text x="178" y="222" class="t">FastAPI</text><text x="178" y="238" class="d">JWT · role from DB · SSE</text>
-  <rect x="328" y="192" width="300" height="118" rx="10" class="p"/>
-  <text x="342" y="212" class="t">LangGraph agent</text>
-  <rect x="342" y="222" width="130" height="34" rx="6" class="b"/><text x="352" y="243" class="d">1 search_tools (code)</text>
-  <rect x="484" y="222" width="130" height="34" rx="6" class="b"/><text x="494" y="243" class="d">2 agent (Gemini)</text>
-  <rect x="342" y="266" width="130" height="34" rx="6" class="b"/><text x="352" y="287" class="d">4 tools (code)</text>
-  <rect x="484" y="266" width="130" height="34" rx="6" class="b"/><text x="494" y="287" class="d">3 gate (code)</text>
-  <path d="M472 239 H482" class="e"/><path d="M549 256 V264" class="e"/><path d="M484 283 H474" class="e"/><path d="M407 266 V258" class="e"/>
-  <rect x="652" y="200" width="100" height="54" rx="8" class="b"/><text x="664" y="222" class="t">Executor</text><text x="664" y="238" class="d">retries, idem-key</text>
-  <rect x="776" y="192" width="104" height="70" rx="8" class="b"/><text x="786" y="212" class="t">PayPal REST</text><text x="786" y="228" class="d">mock server</text><text x="786" y="243" class="d">SQLite, stateful</text>
-  <path d="M142 227 H164" class="e"/><path d="M304 227 H326" class="e"/><path d="M628 227 H650" class="e"/><path d="M752 227 H774" class="e"/>
-  <rect x="24" y="330" width="150" height="80" rx="8" class="b"/><text x="36" y="350" class="t">Gemini</text><text x="36" y="366" class="d">model chain: skip models</text><text x="36" y="380" class="d">out of quota / timed out</text><text x="36" y="394" class="d">(45 s timeout)</text>
-  <rect x="192" y="330" width="150" height="80" rx="8" class="b"/><text x="204" y="350" class="t">Qdrant Cloud</text><text x="204" y="366" class="d">tool search (every msg)</text><text x="204" y="380" class="d">rag_search (on demand)</text>
-  <rect x="360" y="330" width="160" height="80" rx="8" class="b"/><text x="372" y="350" class="t">Checkpointer</text><text x="372" y="366" class="d">agent state + chat memory</text><text x="372" y="380" class="d">per user · per session</text><text x="372" y="394" class="d">pause/resume for Yes/No</text>
-  <rect x="538" y="330" width="160" height="80" rx="8" class="b"/><text x="550" y="350" class="t">App database</text><text x="550" y="366" class="d">users (scrypt), audit log,</text><text x="550" y="380" class="d">requests, photos, POs</text>
-  <rect x="716" y="330" width="164" height="80" rx="8" class="b"/><text x="728" y="350" class="t">LangSmith</text><text x="728" y="366" class="d">one trace per message:</text><text x="728" y="380" class="d">search, LLM, validate,</text><text x="728" y="394" class="d">paypal_api, rag_search</text>
-  <path d="M500 310 V328" class="e dash"/><path d="M430 310 V328" class="e dash"/><path d="M560 310 C 560 320, 610 320, 612 328" class="e dash"/><path d="M620 300 C 700 310, 780 312, 798 328" class="e dash"/><path d="M360 300 C 300 316, 272 320, 268 328" class="e dash"/><path d="M340 250 C 220 290, 120 300, 100 328" class="e dash"/>
+  <rect x="8" y="6" width="884" height="138" rx="10" class="zone"/>
+  <text x="22" y="26" class="z">OFFLINE · RUNS ONCE WHEN THE API CATALOGUE CHANGES</text>
+  <rect x="22" y="38" width="150" height="46" rx="8" class="bx"/><text x="34" y="57" class="t">Postman collection</text><text x="34" y="73" class="d">PayPal · 112 requests</text>
+  <rect x="196" y="38" width="138" height="46" rx="8" class="bx"/><text x="208" y="57" class="t">Parser · code</text><text x="208" y="73" class="d">params → path/query/body</text>
+  <rect x="358" y="38" width="196" height="46" rx="8" class="bx"/><text x="370" y="57" class="t">Enricher · Gemini</text><text x="370" y="73" class="d">description · 4 questions · roles · r/w</text>
+  <rect x="578" y="38" width="138" height="46" rx="8" class="bx"/><text x="590" y="57" class="t">tools.json</text><text x="590" y="73" class="d">validated · in git</text>
+  <rect x="740" y="38" width="140" height="46" rx="8" class="hl"/><text x="752" y="57" class="t">Qdrant · tools</text><text x="752" y="73" class="d">BM25 + dense</text>
+  <path d="M172 61 H194" class="e"/><path d="M334 61 H356" class="e"/><path d="M554 61 H576" class="e"/><path d="M716 61 H738" class="e"/>
+  <rect x="22" y="92" width="210" height="44" rx="8" class="bx"/><text x="34" y="110" class="t">Policy documents</text><text x="34" y="126" class="d">5 shop + 10 PayPal pages</text>
+  <rect x="256" y="92" width="298" height="44" rx="8" class="bx"/><text x="268" y="110" class="t">Split by heading → 2,000 chars, 200 overlap</text><text x="268" y="126" class="d">"title › section" kept with every chunk</text>
+  <rect x="740" y="92" width="140" height="44" rx="8" class="hl"/><text x="752" y="110" class="t">Qdrant · docs</text><text x="752" y="126" class="d">336 chunks</text>
+  <path d="M232 114 H254" class="e"/><path d="M554 114 H738" class="e"/>
+  <rect x="8" y="156" width="884" height="306" rx="10" class="zone"/>
+  <text x="22" y="176" class="z">ONLINE · EVERY MESSAGE</text>
+  <rect x="22" y="196" width="118" height="58" rx="8" class="bx"/><text x="34" y="218" class="t">Web app</text><text x="34" y="234" class="d">chat · data</text><text x="34" y="247" class="d">orders · audit</text>
+  <rect x="162" y="196" width="142" height="58" rx="8" class="bx"/><text x="174" y="218" class="t">FastAPI</text><text x="174" y="234" class="d">JWT · role from DB</text><text x="174" y="247" class="d">SSE streaming</text>
+  <rect x="326" y="188" width="300" height="124" rx="10" class="hl"/>
+  <text x="340" y="208" class="t">LangGraph agent</text>
+  <rect x="340" y="218" width="130" height="36" rx="6" class="bx"/><text x="350" y="240" class="d">① search_tools · code</text>
+  <rect x="482" y="218" width="130" height="36" rx="6" class="bx"/><text x="492" y="240" class="d">② agent · Gemini</text>
+  <rect x="482" y="264" width="130" height="36" rx="6" class="bx"/><text x="492" y="286" class="d">③ gate · code</text>
+  <rect x="340" y="264" width="130" height="36" rx="6" class="bx"/><text x="350" y="286" class="d">④ tools · code</text>
+  <path d="M470 236 H480" class="e"/><path d="M547 254 V262" class="e"/><path d="M482 282 H472" class="e"/><path d="M405 264 V256" class="e"/>
+  <rect x="648" y="196" width="104" height="58" rx="8" class="bx"/><text x="660" y="218" class="t">Executor</text><text x="660" y="234" class="d">retries · backoff</text><text x="660" y="247" class="d">idempotency key</text>
+  <rect x="774" y="188" width="106" height="74" rx="8" class="bx"/><text x="786" y="209" class="t">PayPal REST</text><text x="786" y="225" class="d">mock server</text><text x="786" y="239" class="d">SQLite · stateful</text><text x="786" y="253" class="d">(sandbox-ready)</text>
+  <path d="M140 225 H160" class="e"/><path d="M304 225 H324" class="e"/><path d="M626 225 H646" class="e"/><path d="M752 225 H772" class="e"/>
+  <rect x="22" y="340" width="158" height="112" rx="8" class="bx"/><text x="34" y="360" class="t">Gemini</text><text x="34" y="377" class="d">tool calling · streaming</text><text x="34" y="391" class="d">model chain: skip models</text><text x="34" y="405" class="d">out of quota (a day) or</text><text x="34" y="419" class="d">timed out (5 min)</text><text x="34" y="433" class="d">45 s timeout per call</text>
+  <rect x="196" y="340" width="158" height="112" rx="8" class="bx"/><text x="208" y="360" class="t">Qdrant Cloud</text><text x="208" y="377" class="d">tools: every message</text><text x="208" y="391" class="d">docs: rag_search</text><text x="208" y="405" class="d">role = payload filter</text>
+  <rect x="370" y="340" width="158" height="112" rx="8" class="bx"/><text x="382" y="360" class="t">Checkpointer</text><text x="382" y="377" class="d">state after every node</text><text x="382" y="391" class="d">per user · per session</text><text x="382" y="405" class="d">pause / resume Yes-No</text>
+  <rect x="544" y="340" width="158" height="112" rx="8" class="bx"/><text x="556" y="360" class="t">App database</text><text x="556" y="377" class="d">users (scrypt)</text><text x="556" y="391" class="d">audit log · requests</text><text x="556" y="405" class="d">photos · purchase orders</text>
+  <rect x="718" y="340" width="162" height="112" rx="8" class="bx"/><text x="730" y="360" class="t">LangSmith</text><text x="730" y="377" class="d">one trace per message</text><text x="730" y="391" class="d">tool_search · LLM calls</text><text x="730" y="405" class="d">validate · paypal_api</text><text x="730" y="419" class="d">rag_search</text>
+  <path d="M530 312 C 460 330, 140 320, 100 338" class="e ds"/><path d="M405 312 C 380 326, 300 326, 276 338" class="e ds"/><path d="M450 312 V338" class="e ds"/><path d="M570 312 C 600 326, 620 330, 622 338" class="e ds"/><path d="M620 300 C 720 314, 790 318, 798 338" class="e ds"/>
 </svg>
 <div class="cap">Figure 1. Offline, the Postman collection becomes validated, searchable tool cards (the enricher's output is schema-checked and every example call is dry-run against the mock). Online, only code talks to PayPal: the model proposes, the gate checks, the executor runs.</div>
 </div>
+<table>
+  <tr><th style="width:22%">Component</th><th>Responsibility</th></tr>
+  <tr><td>Parser + enricher</td><td>Turn each Postman request into a card: name, method, path, parameters (with where each goes), then add a plain description, 4 example questions, allowed roles, read/write, required fields and a validated example call.</td></tr>
+  <tr><td>Tool registry</td><td><code>tools.json</code>: the single source of truth for what a tool is, who may use it and how to call it. Loaded into memory at start.</td></tr>
+  <tr><td>FastAPI app</td><td>Login, streaming chat, account data, disputes, purchase orders, invoices. Every endpoint checks the role on the server.</td></tr>
+  <tr><td>LangGraph agent</td><td>The loop in section 5. Only node ② is an LLM.</td></tr>
+  <tr><td>Executor</td><td>The only thing that calls PayPal: builds the HTTP request from the card, retries safely, returns one plain sentence on errors.</td></tr>
+</table>
+</section>
 
-<h2 class="page">3. Agent structure</h2>
-<p>One <b>ReAct</b> agent (reason → act → observe, repeated) built as a LangGraph state machine. Only one of the four nodes
-is an LLM; everything that has a single right answer is code.</p>
+<section class="page">
+<h2><span class="n">4</span> Life of one message</h2>
+<p>"<i>Send an invoice for $50 to john@x.com</i>", from the accountant:</p>
 <div class="fig">
-<svg viewBox="0 0 900 190" xmlns="http://www.w3.org/2000/svg">
-  <defs><marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5d6275"/></marker>
-  <style>.n{fill:#fff;stroke:#b9bdd0;stroke-width:1.2}.m{fill:#ecebfd;stroke:#5b5bd6;stroke-width:1.4}.t{font-size:13px;font-weight:600;fill:#1b1e2e}.d{font-size:10.5px;fill:#5d6275}.e{stroke:#5d6275;stroke-width:1.3;fill:none;marker-end:url(#b)}</style></defs>
-  <circle cx="30" cy="70" r="12" fill="#1b1e2e"/><text x="16" y="100" class="d">message</text>
-  <rect x="62" y="40" width="170" height="60" rx="9" class="n"/><text x="74" y="63" class="t">search_tools</text><text x="74" y="80" class="d">role-filtered hybrid search</text><text x="74" y="93" class="d">→ top 5 tools + built-ins</text>
-  <rect x="270" y="40" width="170" height="60" rx="9" class="m"/><text x="282" y="63" class="t">agent (Gemini)</text><text x="282" y="80" class="d">answer, or call tools</text><text x="282" y="93" class="d">(parallel when independent)</text>
-  <rect x="490" y="40" width="190" height="60" rx="9" class="n"/><text x="502" y="63" class="t">gate</text><text x="502" y="80" class="d">validate · customer scope</text><text x="502" y="93" class="d">⏸ ask Yes/No for writes</text>
-  <rect x="490" y="120" width="190" height="60" rx="9" class="n"/><text x="502" y="143" class="t">tools</text><text x="502" y="160" class="d">call PayPal · filter results</text><text x="502" y="173" class="d">audit log · record for receipt</text>
-  <rect x="720" y="40" width="165" height="60" rx="9" class="n"/><text x="732" y="63" class="t">answer + receipt</text><text x="732" y="80" class="d">streamed to the page;</text><text x="732" y="93" class="d">receipt written by code</text>
-  <path d="M42 70 H60" class="e"/><path d="M232 70 H268" class="e"/><path d="M440 70 H488" class="e"/><text x="448" y="62" class="d">tool calls</text>
-  <path d="M585 100 V118" class="e"/><path d="M490 150 C 380 150, 355 130, 355 102" class="e"/><text x="232" y="150" class="d">results back · max 8 rounds</text>
-  <path d="M440 50 C 560 10, 660 10, 718 52" class="e"/><text x="560" y="20" class="d">no tool call</text>
+<svg id="f2" viewBox="0 0 900 470" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="sq" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#18203a"/></marker>
+  <style>#f2 .hd{fill:#eef0ff;stroke:#4f46e5}#f2 .ht{font-size:11.5px;font-weight:700;fill:#18203a}#f2 .ln{stroke:#c3c7d6;stroke-dasharray:3 4}#f2 .m{stroke:#18203a;stroke-width:1.2;marker-end:url(#sq)}#f2 .mt{font-size:10px;fill:#18203a}#f2 .mn{font-size:10px;fill:#4f46e5;font-weight:700}#f2 .nt{fill:#fff5e6;stroke:#e3b567}</style></defs>
+  <rect x="10" y="8" width="100" height="30" rx="6" class="hd"/><text x="42" y="28" class="ht">User</text>
+  <rect x="140" y="8" width="100" height="30" rx="6" class="hd"/><text x="164" y="28" class="ht">FastAPI</text>
+  <rect x="270" y="8" width="120" height="30" rx="6" class="hd"/><text x="286" y="28" class="ht">search_tools</text>
+  <rect x="420" y="8" width="100" height="30" rx="6" class="hd"/><text x="446" y="28" class="ht">Gemini</text>
+  <rect x="550" y="8" width="100" height="30" rx="6" class="hd"/><text x="586" y="28" class="ht">gate</text>
+  <rect x="680" y="8" width="100" height="30" rx="6" class="hd"/><text x="700" y="28" class="ht">tools/exec</text>
+  <rect x="800" y="8" width="90" height="30" rx="6" class="hd"/><text x="824" y="28" class="ht">PayPal</text>
+  <line x1="60" y1="38" x2="60" y2="462" class="ln"/><line x1="190" y1="38" x2="190" y2="462" class="ln"/><line x1="330" y1="38" x2="330" y2="462" class="ln"/><line x1="470" y1="38" x2="470" y2="462" class="ln"/><line x1="600" y1="38" x2="600" y2="462" class="ln"/><line x1="730" y1="38" x2="730" y2="462" class="ln"/><line x1="845" y1="38" x2="845" y2="462" class="ln"/>
+  <path d="M60 60 H188" class="m"/><text x="66" y="55" class="mt"><tspan class="mn">1</tspan> message + JWT</text>
+  <path d="M190 84 H328" class="m"/><text x="196" y="79" class="mt"><tspan class="mn">2</tspan> user + role (from DB)</text>
+  <path d="M330 108 H468" class="m"/><text x="336" y="103" class="mt"><tspan class="mn">3</tspan> top 5 tools + built-ins</text>
+  <path d="M470 132 H598" class="m"/><text x="476" y="127" class="mt"><tspan class="mn">4</tspan> create_draft_invoice{…}</text>
+  <path d="M600 156 H62" class="m"/><text x="300" y="151" class="mt"><tspan class="mn">5</tspan> validated → ⏸ "Create draft invoice for 50.00 USD to john@x.com?"</text>
+  <path d="M60 180 H598" class="m"/><text x="250" y="175" class="mt"><tspan class="mn">6</tspan> Yes (resumes the paused run)</text>
+  <path d="M600 204 H728" class="m"/><text x="606" y="199" class="mt"><tspan class="mn">7</tspan> approved</text>
+  <path d="M730 228 H843" class="m"/><text x="736" y="223" class="mt"><tspan class="mn">8</tspan> POST + Request-Id</text>
+  <path d="M845 252 H732" class="m"/><text x="752" y="247" class="mt">201 INV2-…</text>
+  <path d="M730 276 H472" class="m"/><text x="560" y="271" class="mt"><tspan class="mn">9</tspan> result (compacted)</text>
+  <path d="M470 300 H598" class="m"/><text x="476" y="295" class="mt"><tspan class="mn">10</tspan> send_invoice{INV2-…}</text>
+  <path d="M600 324 H62" class="m"/><text x="300" y="319" class="mt"><tspan class="mn">11</tspan> ⏸ "Send invoice INV2-…?" → Yes → runs like 7–9</text>
+  <path d="M470 348 H62" class="m"/><text x="130" y="343" class="mt"><tspan class="mn">12</tspan> answer streamed word by word + 🧾 receipt (written by code)</text>
+  <rect x="96" y="380" width="700" height="62" rx="6" class="nt"/>
+  <text x="108" y="400" class="mt">Every arrow above is a span in the LangSmith trace. Nothing reaches PayPal without steps 5–7; the same</text>
+  <text x="108" y="415" class="mt">Request-Id is reused on retries, so a timeout can't create two invoices. If the model had skipped step 10</text>
+  <text x="108" y="430" class="mt">but claimed "sent", the receipt would still say only "✅ Done: Create draft invoice".</text>
 </svg>
-<div class="cap">Figure 2. The loop. The model sees only the tools it was offered; nothing it asks for runs without passing the gate.</div>
+<div class="cap">Figure 2. The two writes each pause the graph for the user's approval; the run resumes from the saved state in a new HTTP request.</div>
+</div>
+</section>
+
+<section>
+<h2><span class="n">5</span> Agent structure</h2>
+<p>One <b>ReAct</b> agent (reason → act → observe, repeated) as a LangGraph state machine. The loop runs as many rounds as the
+question needs (0 for "what can you do?", 3 for "refund Rahul's disputed payment"), capped at 8.</p>
+<div class="fig">
+<svg id="f3" viewBox="0 0 900 190" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="b2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5b6275"/></marker>
+  <style>#f3 .n{fill:#fff;stroke:#c3c7d6;stroke-width:1.2}#f3 .m{fill:#eef0ff;stroke:#4f46e5;stroke-width:1.5}#f3 .t{font-size:13px;font-weight:650;fill:#18203a}#f3 .d{font-size:10.3px;fill:#5b6275}#f3 .e{stroke:#5b6275;stroke-width:1.3;fill:none;marker-end:url(#b2)}</style></defs>
+  <circle cx="28" cy="70" r="12" fill="#18203a"/><text x="10" y="100" class="d">message</text>
+  <rect x="60" y="40" width="172" height="60" rx="9" class="n"/><text x="72" y="63" class="t">search_tools</text><text x="72" y="80" class="d">role-filtered hybrid search</text><text x="72" y="93" class="d">→ top 5 + built-ins</text>
+  <rect x="270" y="40" width="172" height="60" rx="9" class="m"/><text x="282" y="63" class="t">agent · Gemini</text><text x="282" y="80" class="d">answer, or call tools</text><text x="282" y="93" class="d">(parallel if independent)</text>
+  <rect x="492" y="40" width="190" height="60" rx="9" class="n"/><text x="504" y="63" class="t">gate</text><text x="504" y="80" class="d">validate · scope · money rules</text><text x="504" y="93" class="d">⏸ ask Yes/No for writes</text>
+  <rect x="492" y="122" width="190" height="60" rx="9" class="n"/><text x="504" y="145" class="t">tools</text><text x="504" y="162" class="d">run · filter · audit log</text><text x="504" y="175" class="d">record for the receipt</text>
+  <rect x="722" y="40" width="165" height="60" rx="9" class="n"/><text x="734" y="63" class="t">answer + receipt</text><text x="734" y="80" class="d">streamed (SSE)</text><text x="734" y="93" class="d">receipt from code</text>
+  <path d="M40 70 H58" class="e"/><path d="M232 70 H268" class="e"/><path d="M442 70 H490" class="e"/><text x="450" y="62" class="d">tool calls</text>
+  <path d="M587 100 V120" class="e"/><path d="M492 152 C 380 152, 356 132, 356 102" class="e"/><text x="236" y="152" class="d">results back · max 8 rounds</text>
+  <path d="M442 50 C 560 8, 662 8, 720 52" class="e"/><text x="562" y="18" class="d">no tool call</text>
+</svg>
 </div>
 <table>
-  <tr><th style="width:18%">Node</th><th style="width:12%">LLM?</th><th>Responsibility</th></tr>
-  <tr><td>search_tools</td><td>No</td><td>Picks the tools for this message (§4). Short follow-ups ("refund the first one") are searched together with the previous message.</td></tr>
-  <tr><td>agent</td><td>Yes</td><td>Decides the next step from the conversation, tool results and errors. Can run independent calls in parallel, or chain dependent ones (list → details → refund).</td></tr>
-  <tr><td>gate</td><td>No</td><td>Validates every proposed call (§6); for writes, pauses the graph with <code>interrupt()</code> and asks the user. Changes nothing, so a resumed run never repeats an action.</td></tr>
-  <tr><td>tools</td><td>No</td><td>Executes only approved calls, filters list results to the caller's own records, writes the audit log, and records what really happened.</td></tr>
+  <tr><th style="width:16%">Node</th><th style="width:9%">LLM?</th><th>Job</th></tr>
+  <tr><td>search_tools</td><td>No</td><td>Picks this message's tools (section 6). Short follow-ups ("refund the first one") are searched with the previous message.</td></tr>
+  <tr><td>agent</td><td><b>Yes</b></td><td>Reads the conversation, tool results and errors; calls tools (chaining dependent ones, e.g. list → details → refund) or answers.</td></tr>
+  <tr><td>gate</td><td>No</td><td>Checks every proposed call (section 9); for writes, pauses with <code>interrupt()</code>. Changes no data, so a resumed run never repeats an action.</td></tr>
+  <tr><td>tools</td><td>No</td><td>Runs approved calls, filters list results to the caller's own records, writes the audit log, records what really ran.</td></tr>
 </table>
-<p><b>Why one agent and not several?</b> Tool search already does the routing a supervisor agent would do, for one LLM call
-fewer per message. Safety checks stay in deterministic code, which a second "validator" LLM could not guarantee. The graph
-is modular, so domain sub-agents (disputes, invoicing, reporting) can be added as sub-graphs if the catalogue outgrows a
-single prompt (§8).</p>
+<div class="box key"><b>Why one agent, not several?</b> Tool search already does the routing a supervisor would do, for one LLM call
+fewer per message, and safety stays in deterministic code rather than a second "validator" LLM. Domain sub-agents can be added as
+LangGraph sub-graphs if one prompt can no longer hold the rules (section 12).</div>
+</section>
 
-<h2>4. Tool selection and routing</h2>
+<section class="page">
+<h2><span class="n">6</span> Tool selection and routing</h2>
+<div class="fig">
+<svg id="f4" viewBox="0 0 900 200" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="b3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5b6275"/></marker>
+  <style>#f4 .n{fill:#fff;stroke:#c3c7d6;stroke-width:1.2}#f4 .m{fill:#eef0ff;stroke:#4f46e5;stroke-width:1.5}#f4 .g{fill:#e9f7f0;stroke:#0f7a4b;stroke-width:1.3}#f4 .t{font-size:12.5px;font-weight:650;fill:#18203a}#f4 .d{font-size:10.3px;fill:#5b6275}#f4 .e{stroke:#5b6275;stroke-width:1.3;fill:none;marker-end:url(#b3)}</style></defs>
+  <rect x="10" y="70" width="150" height="58" rx="8" class="n"/><text x="22" y="92" class="t">Question</text><text x="22" y="108" class="d">"give the customer</text><text x="22" y="121" class="d">their money back"</text>
+  <rect x="190" y="70" width="140" height="58" rx="8" class="g"/><text x="202" y="92" class="t">Role filter</text><text x="202" y="108" class="d">allowed_roles ∋ role</text><text x="202" y="121" class="d">inside both searches</text>
+  <rect x="362" y="18" width="170" height="58" rx="8" class="n"/><text x="374" y="40" class="t">BM25 (sparse)</text><text x="374" y="56" class="d">exact words, IDs</text><text x="374" y="69" class="d">→ top 20</text>
+  <rect x="362" y="122" width="170" height="58" rx="8" class="n"/><text x="374" y="144" class="t">Dense (bge-small)</text><text x="374" y="160" class="d">"money back" ≈ refund</text><text x="374" y="173" class="d">→ top 20</text>
+  <rect x="564" y="70" width="130" height="58" rx="8" class="m"/><text x="576" y="92" class="t">RRF fusion</text><text x="576" y="108" class="d">Σ 1 / (60 + rank)</text><text x="576" y="121" class="d">→ top 5</text>
+  <rect x="726" y="52" width="164" height="94" rx="8" class="m"/><text x="738" y="74" class="t">Gemini sees</text><text x="738" y="91" class="d">5 searched tools</text><text x="738" y="105" class="d">+ built-ins (role-based)</text><text x="738" y="119" class="d">name · description · schema</text><text x="738" y="133" class="d">required fields · example call</text>
+  <path d="M160 99 H188" class="e"/><path d="M330 90 C 345 60, 350 50, 360 47" class="e"/><path d="M330 108 C 345 138, 350 150, 360 151" class="e"/>
+  <path d="M532 47 C 548 50, 552 80, 562 90" class="e"/><path d="M532 151 C 548 148, 552 118, 562 108" class="e"/><path d="M694 99 H724" class="e"/>
+</svg>
+<div class="cap">Figure 3. Retrieval-first routing. Each card is indexed from its name, category, description and four example questions.</div>
+</div>
 <div class="two">
 <div>
-<p>Every tool card is indexed twice in Qdrant, from its name, category, description and four example questions:</p>
-<ul>
-  <li><b>BM25</b> (sparse): exact words and IDs, e.g. "refund", "PP-D-38106".</li>
-  <li><b>Dense</b> (bge-small, 384-d): meaning, e.g. "money back" ≈ refund.</li>
-</ul>
-<p>Each returns its top 20; <b>Reciprocal Rank Fusion</b> merges them by rank and the top 5 go to the model. The user's role
-is a <b>payload filter inside both searches</b>, so a customer is never even shown a refund tool.</p>
+<h3>Built-in tools (always offered)</h3>
+<table>
+  <tr><th>Tool</th><th>For</th></tr>
+  <tr><td><code>rag_search</code></td><td>Policy questions (RAG tool)</td></tr>
+  <tr><td><code>system_search</code></td><td>What can you do · my activity</td></tr>
+  <tr><td><code>find_tools</code></td><td>Search the full catalogue</td></tr>
+  <tr><td><code>check_updates</code></td><td>What needs my attention</td></tr>
+  <tr><td><code>order_status</code></td><td>Purchase orders, tracking</td></tr>
+  <tr><td><i>customer only</i></td><td><code>my_purchases</code>, <code>report_problem</code>, <code>request_resolution</code>, <code>close_case</code></td></tr>
+  <tr><td><i>shop only</i></td><td><code>customer_payments</code> (find the right customer among many)</td></tr>
+</table>
 </div>
 <div>
-<p><b>Always offered (built-ins, role-dependent):</b></p>
+<h3>Why this scales</h3>
 <ul>
-  <li><code>rag_search</code>: policy questions (the RAG pipeline tool).</li>
-  <li><code>system_search</code>: capabilities and the user's own activity.</li>
-  <li><code>find_tools</code>: searches the full catalogue when the 5 don't fit.</li>
-  <li><code>check_updates</code>, <code>order_status</code>: what's new, purchase orders.</li>
-  <li>Customer: report a problem, ask for refund/replacement, close a case. Shop: find a customer and their payments.</li>
+  <li>The prompt holds 5 tools whatever the catalogue size: cost and accuracy don't degrade as APIs are added.</li>
+  <li>Adding an API = add a card and re-index. No prompt changes, no code changes.</li>
+  <li>Permissions are enforced in the search itself: a customer's model never sees a refund tool.</li>
+  <li><code>find_tools</code> lets the model recover if the first 5 miss.</li>
+  <li>Measured at 1,012 tools in section 11.</li>
 </ul>
 </div>
 </div>
-<p><b>Why this scales:</b> the prompt size is constant (5 + built-ins) whatever the catalogue size; adding an API means adding
-a card and re-indexing, with no prompt changes. What the model reads is engineered: each tool shows its required fields and
-a validated example call, results are compacted, and errors are one plain sentence.</p>
+</section>
 
-<h3>RAG pipeline tool</h3>
-<p>Documents are split by Markdown heading, then to 2,000 characters (200 overlap), keeping "title › section" with every chunk.
-Search is the same hybrid + RRF (top 20), then a <b>cross-encoder reranker</b> reads question and chunk together and keeps
-the best 5; weak matches are marked, so the agent says "not in the policies" instead of guessing. Shop policy is also
-<b>enforced in code</b> where money is involved (e.g. in-store purchases: at most 50% back).</p>
+<section>
+<h2><span class="n">7</span> RAG pipeline tool and System Search tool</h2>
+<div class="fig">
+<svg id="f5" viewBox="0 0 900 110" xmlns="http://www.w3.org/2000/svg">
+  <defs><marker id="b4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5b6275"/></marker>
+  <style>#f5 .n{fill:#fff;stroke:#c3c7d6;stroke-width:1.2}#f5 .m{fill:#eef0ff;stroke:#4f46e5;stroke-width:1.5}#f5 .t{font-size:12px;font-weight:650;fill:#18203a}#f5 .d{font-size:10px;fill:#5b6275}#f5 .e{stroke:#5b6275;stroke-width:1.3;fill:none;marker-end:url(#b4)}</style></defs>
+  <rect x="6" y="24" width="118" height="62" rx="8" class="n"/><text x="16" y="46" class="t">Policy question</text><text x="16" y="62" class="d">"return window?"</text><text x="16" y="76" class="d">source: shop/PayPal</text>
+  <rect x="146" y="24" width="150" height="62" rx="8" class="n"/><text x="156" y="46" class="t">Hybrid search</text><text x="156" y="62" class="d">BM25 + dense + RRF</text><text x="156" y="76" class="d">336 chunks → top 20</text>
+  <rect x="318" y="24" width="170" height="62" rx="8" class="m"/><text x="328" y="46" class="t">Cross-encoder rerank</text><text x="328" y="62" class="d">question + chunk together</text><text x="328" y="76" class="d">→ best 5 · weak flagged</text>
+  <rect x="510" y="24" width="180" height="62" rx="8" class="n"/><text x="520" y="46" class="t">Gemini answers</text><text x="520" y="62" class="d">only from the passages</text><text x="520" y="76" class="d">cites "Doc › Section"</text>
+  <rect x="712" y="24" width="182" height="62" rx="8" class="n"/><text x="722" y="46" class="t">Nothing relevant?</text><text x="722" y="62" class="d">"not in the policies",</text><text x="722" y="76" class="d">never from memory</text>
+  <path d="M124 55 H144" class="e"/><path d="M296 55 H316" class="e"/><path d="M488 55 H508" class="e"/><path d="M690 55 H710" class="e"/>
+</svg>
+</div>
+<p><b>System Search</b> answers questions about the assistant itself: <code>mode=capabilities</code> searches the tool index
+(role-filtered, synthetic test tools hidden) for "what can you do with invoices?", and <code>mode=activity</code> reads the
+user's own audit log for "what's the status of my last request?". Where policy involves money it is also <b>enforced in
+code</b>: e.g. in-store purchases can get at most 50% back, whatever the model says.</p>
+</section>
 
-<h2 class="page">5. State management</h2>
+<section class="page">
+<h2><span class="n">8</span> State and memory</h2>
+<div class="two">
+<div>
 <table>
-  <tr><th style="width:26%">What</th><th>Where and why</th></tr>
-  <tr><td>Agent state</td><td>LangGraph <code>AgentState</code>: <code>messages</code> (appended), <code>offered</code> tools, <code>seen</code> (text used to check IDs are real), <code>steps</code>, <code>decisions</code> (gate verdicts), <code>actions</code> (what really ran). Each node returns only the fields it changes.</td></tr>
-  <tr><td>Memory and pause/resume</td><td>A checkpointer saves the state after every node, per <code>user_id__session</code>. A confirmation pauses the run; the user's Yes resumes it exactly where it stopped, even in another HTTP request.</td></tr>
-  <tr><td>Identity</td><td>JWT carries only who you are; the role is read from the database on every request, and a token version makes logout revoke every copy of the token.</td></tr>
-  <tr><td>Business data</td><td>PayPal (mock) is the source of truth for payments, invoices, disputes and tracking. The app database holds what PayPal has no concept of: users, audit log, purchase orders, refund/replacement requests, photos.</td></tr>
+  <tr><th>AgentState field</th><th>Holds</th></tr>
+  <tr><td><code>messages</code></td><td>The conversation (appended)</td></tr>
+  <tr><td><code>offered</code></td><td>Tools the model may call</td></tr>
+  <tr><td><code>seen</code></td><td>Text used to check IDs are real</td></tr>
+  <tr><td><code>steps</code></td><td>Rounds so far (max 8)</td></tr>
+  <tr><td><code>decisions</code></td><td>The gate's verdict per call</td></tr>
+  <tr><td><code>actions</code></td><td>What really ran → receipt</td></tr>
 </table>
+</div>
+<div>
+<ul>
+  <li><b>One shared state</b>; each node returns only the fields it changes (<code>messages</code> is appended, the rest replaced).</li>
+  <li>The <b>checkpointer</b> saves it after every node, per <code>user_id__session</code>: chat memory for follow-ups, and a paused run resumes exactly where it stopped after the user's Yes.</li>
+  <li><b>Identity</b>: the JWT only says who you are; the role is read from the database on each request, and a token version lets logout revoke every copy.</li>
+  <li><b>Business data</b>: PayPal is the source of truth; the app database keeps only what PayPal has no concept of.</li>
+</ul>
+</div>
+</div>
+</section>
 
-<h2>6. Error handling and safety</h2>
+<section>
+<h2><span class="n">9</span> Error handling and safety</h2>
+<div class="fig">
+<svg id="f6" viewBox="0 0 900 250" xmlns="http://www.w3.org/2000/svg">
+  <style>#f6 .l{stroke-width:1.3}#f6 .t{font-size:12px;font-weight:700;fill:#18203a}#f6 .d{font-size:10.2px;fill:#18203a}</style>
+  <rect x="10" y="8" width="880" height="42" rx="8" fill="#eef0ff" stroke="#4f46e5" class="l"/><text x="24" y="26" class="t">1 · Validator (code, every call)</text><text x="24" y="42" class="d">tool allowed and offered for this role · JSON Schema (type slips fixed) · amount &gt; 0, 2 decimals, USD, emails · grounding: no invented IDs · writes need Yes (⚠ over $500)</text>
+  <rect x="10" y="56" width="880" height="42" rx="8" fill="#e9f7f0" stroke="#0f7a4b" class="l"/><text x="24" y="74" class="t">2 · Scope and money rules (code)</text><text x="24" y="90" class="d">customers see only their records · only the customer closes a dispute · disputed payments settled through the dispute · refunds ≤ what's left · real customer named</text>
+  <rect x="10" y="104" width="880" height="42" rx="8" fill="#fff5e6" stroke="#a15c07" class="l"/><text x="24" y="122" class="t">3 · Executor</text><text x="24" y="138" class="d">retries timeouts, 429 and 5xx (1 s, 2 s, 4 s) with the SAME PayPal-Request-Id, so a retried refund never happens twice · 4xx → one plain sentence back to the model</text>
+  <rect x="10" y="152" width="880" height="42" rx="8" fill="#fdeef2" stroke="#b42347" class="l"/><text x="24" y="170" class="t">4 · Model failures</text><text x="24" y="186" class="d">model chain: out of daily quota → skip until tomorrow · timeout / overload → skip 5 min · 45 s timeout · clear message if all fail · 8-round cap says what was done</text>
+  <rect x="10" y="200" width="880" height="42" rx="8" fill="#f5f6fb" stroke="#5b6275" class="l"/><text x="24" y="218" class="t">5 · Truth to the user</text><text x="24" y="234" class="d">🧾 receipt under every reply, written by code from what actually ran: a model that claims an action it didn't take is caught at once</text>
+</svg>
+<div class="cap">Figure 4. Five layers. Layers 1–2 prevent; 3–4 recover; 5 tells the user the truth. Errors from layer 1 go back to the model to fix.</div>
+</div>
+</section>
+
+<section class="page">
+<h2><span class="n">10</span> Observability: what the traces show</h2>
+<p>Every chat message is <b>one LangSmith trace</b> named <code>paymind_chat</code>. LangGraph traces each node automatically;
+four <b>custom spans</b> (<code>@traceable</code>) record our own decisions. Filter by the tag <code>role:customer</code> /
+<code>role:accountant</code>, or by user and session in metadata.</p>
+<div class="fig">
+<svg id="f7" viewBox="0 0 900 420" xmlns="http://www.w3.org/2000/svg">
+  <style>#f7 .r{fill:#fff;stroke:#c3c7d6}#f7 .c{fill:#eef0ff;stroke:#4f46e5}#f7 .a{fill:#e9f7f0;stroke:#0f7a4b}#f7 .t{font-size:12px;font-weight:700;fill:#18203a}#f7 .k{font-size:10.2px;fill:#5b6275}#f7 .ln{stroke:#c3c7d6;stroke-width:1.3;fill:none}</style>
+  <rect x="10" y="8" width="880" height="44" rx="7" class="c"/>
+  <text x="22" y="27" class="t">paymind_chat  (root, one per message)</text>
+  <text x="22" y="43" class="k">metadata: user_id · role · session_id   ·   tag: role:&lt;role&gt;   ·   input: the message   ·   output: the answer   ·   total latency and tokens</text>
+  <path d="M30 52 V386" class="ln"/>
+  <path d="M30 80 H48" class="ln"/><rect x="48" y="60" width="842" height="40" rx="6" class="a"/>
+  <text x="60" y="77" class="t">search_tools → tool_search</text><text x="250" y="77" class="k">custom span</text>
+  <text x="60" y="92" class="k">for each of the top 5: rank · tool · RRF score · read/write · allowed_roles · description   →  "was the right tool even offered?"</text>
+  <path d="M30 128 H48" class="ln"/><rect x="48" y="108" width="842" height="40" rx="6" class="r"/>
+  <text x="60" y="125" class="t">agent → ChatGoogleGenerativeAI</text><text x="290" y="125" class="k">automatic</text>
+  <text x="60" y="140" class="k">system prompt · offered tool schemas · messages in  →  tool calls (name + arguments) or text · model used · tokens · latency</text>
+  <path d="M30 176 H48" class="ln"/><rect x="48" y="156" width="842" height="40" rx="6" class="a"/>
+  <text x="60" y="173" class="t">gate → validate</text><text x="170" y="173" class="k">custom span</text>
+  <text x="60" y="188" class="k">tool · arguments → outcome (ok / invalid / blocked / needs_confirmation) · each error · the confirmation text · large-amount flag</text>
+  <path d="M30 224 H48" class="ln"/><rect x="48" y="204" width="842" height="40" rx="6" class="r"/>
+  <text x="60" y="221" class="t">gate → interrupt</text><text x="180" y="221" class="k">automatic</text>
+  <text x="60" y="236" class="k">the pause for a Yes/No: the question shown to the user; the next trace resumes the same thread</text>
+  <path d="M30 272 H48" class="ln"/><rect x="48" y="252" width="842" height="40" rx="6" class="a"/>
+  <text x="60" y="269" class="t">tools → paypal_api</text><text x="190" y="269" class="k">custom span</text>
+  <text x="60" y="284" class="k">tool · method · path · params → status code · attempts · PayPal-Request-Id · replayed? · caller (user, role) · allowed_roles · role_allowed · error</text>
+  <path d="M30 320 H48" class="ln"/><rect x="48" y="300" width="842" height="40" rx="6" class="a"/>
+  <text x="60" y="317" class="t">tools → rag_search</text><text x="190" y="317" class="k">custom span</text>
+  <text x="60" y="332" class="k">query · source filter → each hit: document title › section · shop / PayPal · reranker score · relevant?</text>
+  <path d="M30 368 H48" class="ln"/><rect x="48" y="348" width="842" height="40" rx="6" class="r"/>
+  <text x="60" y="365" class="t">agent → ChatGoogleGenerativeAI (next round)</text><text x="370" y="365" class="k">automatic</text>
+  <text x="60" y="380" class="k">sees the tool results, then calls the next tool or writes the final answer (streamed)</text>
+  <text x="48" y="410" class="k">Also captured: model fallbacks (a failed model shows as an errored child run before the one that answered).</text>
+</svg>
+<div class="cap">Figure 5. One trace. Green spans are our custom spans: the code decisions that make the system safe, and the first place to look when something goes wrong.</div>
+</div>
 <table>
-  <tr><th style="width:26%">Layer</th><th>What it catches</th></tr>
-  <tr><td>Validator (5 checks, code)</td><td>Tool allowed and offered for this role · parameters match the JSON Schema (obvious type slips fixed) · business rules (amount &gt; 0, 2 decimals, USD, valid emails) · <b>grounding</b>: every ID must have appeared in the conversation (no invented IDs) · writes need confirmation, with a stronger warning over $500. Failures go back to the model to fix.</td></tr>
-  <tr><td>Scope and money rules (code)</td><td>Customers only touch their own records; a payment with an open dispute can't be refunded directly; refunds can't exceed what's left; the confirmation names the real customer and purchase, looked up from PayPal, not the model's words.</td></tr>
-  <tr><td>Executor</td><td>Retries timeouts, 429 and 5xx (1 s, 2 s, 4 s) with the <b>same PayPal-Request-Id</b>, so a retried refund can never happen twice; 4xx errors become one sentence for the model.</td></tr>
-  <tr><td>Model failures</td><td>Model chain: a model out of daily quota is skipped until tomorrow; a timed-out or overloaded one is skipped for 5 minutes; 45 s timeout per call; clear message if all fail.</td></tr>
-  <tr><td>Truth to the user</td><td>Under every reply, a <b>receipt written by code</b> from what actually ran ("✅ Done: Refund 79.99 USD" or "No changes were made"), so a model that claims an action it didn't take is caught immediately. A step limit (8) stops runaway loops and says what was done.</td></tr>
+  <tr><th style="width:30%">Symptom</th><th>Where the trace shows the cause</th></tr>
+  <tr><td>Wrong or no tool used</td><td><code>tool_search</code>: was it in the top 5? If yes, the LLM span shows what it chose instead.</td></tr>
+  <tr><td>"It said done but nothing happened"</td><td><code>validate</code> (blocked / invalid?) and whether a <code>paypal_api</code> span exists; the receipt shows the same.</td></tr>
+  <tr><td>Slow answer</td><td>Per-span latency: nearly always the LLM (or a fallback after a timeout); PayPal calls take milliseconds.</td></tr>
+  <tr><td>Access question</td><td><code>paypal_api</code> records the caller, the tool's allowed roles and <code>role_allowed</code>.</td></tr>
 </table>
+<p>For users, the in-app <b>audit log</b> keeps every action (who, what, when, result); developer detail stays in LangSmith.</p>
+</section>
 
-<h2>7. Observability</h2>
-<p>Each message is one LangSmith trace (<code>paymind_chat</code>), tagged with user, role and session. Its spans show the
-<b>tool search</b> (tools, scores, allowed roles), each <b>Gemini call</b> (prompt, tool choice, model, tokens), the
-<b>validator</b> verdict, every <b>PayPal call</b> (status, attempts, whether the role was allowed) and <b>RAG</b> hits.
-So any answer can be explained: what the model saw, what it decided, what code allowed, what ran, and how long each took.
-The in-app audit log keeps the same actions for users; developer detail stays in LangSmith.</p>
-
-<h2 class="page">8. Scalability</h2>
-<h3>Measured: does tool search still find the right tool at 1,000 tools?</h3>
-<p>42 hand-written questions (not from the tool cards) were searched over the 112 real tools, then with 400 and 900
-synthetic tools added from 25 look-alike services (other payment, billing, CRM, accounting, shipping, support APIs) that
-reuse PayPal's vocabulary ("refund a charge", "list invoices", "respond to dispute") to be as confusing as possible.</p>
+<section class="page">
+<h2><span class="n">11</span> Scalability: measured</h2>
+<p><b>Does tool search still find the right tool at 1,000+ tools?</b> 42 hand-written questions (not from the tool cards) were
+searched over the 112 real tools, then with 400 and 900 synthetic tools from 25 look-alike services (other payment, billing, CRM,
+accounting, shipping and support APIs) that reuse PayPal's vocabulary: "refund a charge", "list invoices", "respond to dispute".</p>
 <div class="two">
 <div>
 <table>
@@ -226,69 +422,122 @@ reuse PayPal's vocabulary ("refund a charge", "list invoices", "respond to dispu
 </table>
 </div>
 <div class="fig">
-<svg viewBox="0 0 420 260" xmlns="http://www.w3.org/2000/svg">
-  <style>.ax{stroke:#b9bdd0}.g{font-size:11px;fill:#5d6275}.v{font-size:10px;fill:#1b1e2e;font-weight:600}</style>
-  <text x="10" y="16" class="g" style="font-weight:600;fill:#1b1e2e">Right tool in the top 5</text>
-  <line x1="40" y1="220" x2="410" y2="220" class="ax"/>
-  <line x1="40" y1="40" x2="40" y2="220" class="ax"/>
+<svg id="f8" viewBox="0 0 420 262" xmlns="http://www.w3.org/2000/svg">
+  <style>#f8 .ax{stroke:#c3c7d6}#f8 .g{font-size:11px;fill:#5b6275}#f8 .v{font-size:10px;fill:#18203a;font-weight:700}</style>
+  <text x="10" y="16" class="g" style="font-weight:700;fill:#18203a">Right tool in the top 5</text>
+  <line x1="40" y1="220" x2="410" y2="220" class="ax"/><line x1="40" y1="40" x2="40" y2="220" class="ax"/>
   <text x="8" y="224" class="g">60%</text><text x="8" y="134" class="g">80%</text><text x="4" y="44" class="g">100%</text>
   <line x1="40" y1="130" x2="410" y2="130" stroke="#eceef4"/>
-  <!-- scale: 60%→220, 100%→40 : y = 220 - (p-60)*4.5 -->
-  <g>
-    <rect x="58"  y="112" width="30" height="108" fill="#c9cbe0"/><text x="60" y="107" class="v">88</text>
-    <rect x="92"  y="62.5" width="30" height="157.5" fill="#9ea0d8"/><text x="94" y="57" class="v">95</text>
-    <rect x="126" y="40" width="30" height="180" fill="#5b5bd6"/><text x="126" y="35" class="v">100</text>
-    <text x="80" y="238" class="g">112 tools</text>
-  </g>
-  <g>
-    <rect x="178" y="152.5" width="30" height="67.5" fill="#c9cbe0"/><text x="180" y="147" class="v">79</text>
-    <rect x="212" y="62.5" width="30" height="157.5" fill="#9ea0d8"/><text x="214" y="57" class="v">95</text>
-    <rect x="246" y="40" width="30" height="180" fill="#5b5bd6"/><text x="246" y="35" class="v">100</text>
-    <text x="200" y="238" class="g">512 tools</text>
-  </g>
-  <g>
-    <rect x="298" y="148" width="30" height="72" fill="#c9cbe0"/><text x="300" y="143" class="v">76</text>
-    <rect x="332" y="62.5" width="30" height="157.5" fill="#9ea0d8"/><text x="334" y="57" class="v">95</text>
-    <rect x="366" y="40" width="30" height="180" fill="#5b5bd6"/><text x="366" y="35" class="v">100</text>
-    <text x="316" y="238" class="g">1,012 tools</text>
-  </g>
-  <rect x="60" y="248" width="10" height="8" fill="#c9cbe0"/><text x="74" y="256" class="g">BM25</text>
-  <rect x="120" y="248" width="10" height="8" fill="#9ea0d8"/><text x="134" y="256" class="g">Dense</text>
-  <rect x="182" y="248" width="10" height="8" fill="#5b5bd6"/><text x="196" y="256" class="g">Hybrid (ours)</text>
+  <rect x="58" y="112" width="30" height="108" fill="#cfd2e6"/><text x="60" y="107" class="v">88</text>
+  <rect x="92" y="62.5" width="30" height="157.5" fill="#9fa3e0"/><text x="94" y="57" class="v">95</text>
+  <rect x="126" y="40" width="30" height="180" fill="#4f46e5"/><text x="126" y="35" class="v">100</text>
+  <text x="80" y="238" class="g">112 tools</text>
+  <rect x="178" y="152.5" width="30" height="67.5" fill="#cfd2e6"/><text x="180" y="147" class="v">79</text>
+  <rect x="212" y="62.5" width="30" height="157.5" fill="#9fa3e0"/><text x="214" y="57" class="v">95</text>
+  <rect x="246" y="40" width="30" height="180" fill="#4f46e5"/><text x="246" y="35" class="v">100</text>
+  <text x="200" y="238" class="g">512 tools</text>
+  <rect x="298" y="148" width="30" height="72" fill="#cfd2e6"/><text x="300" y="143" class="v">76</text>
+  <rect x="332" y="62.5" width="30" height="157.5" fill="#9fa3e0"/><text x="334" y="57" class="v">95</text>
+  <rect x="366" y="40" width="30" height="180" fill="#4f46e5"/><text x="366" y="35" class="v">100</text>
+  <text x="316" y="238" class="g">1,012 tools</text>
+  <rect x="60" y="248" width="10" height="8" fill="#cfd2e6"/><text x="74" y="256" class="g">BM25</text>
+  <rect x="120" y="248" width="10" height="8" fill="#9fa3e0"/><text x="134" y="256" class="g">Dense</text>
+  <rect x="182" y="248" width="10" height="8" fill="#4f46e5"/><text x="196" y="256" class="g">Hybrid (ours)</text>
 </svg>
 </div>
 </div>
-<p><b>Reading:</b> keyword search alone degrades as look-alikes are added (88% → 76%); dense holds at 95%; the hybrid keeps
-the right tool in what the model sees <b>every time</b>, at ~20 ms. Top-1 falls from 79% to 71%, which is why the model is
-shown 5 candidates, not 1, and chooses among them with their descriptions. Honest limits: 42 questions, template-generated
-distractors, local in-memory Qdrant. Reproduce with <code>python -m paymind.retrieval.eval_tools</code>.</p>
+<div class="box ok"><b>Reading.</b> Keyword search alone degrades as look-alikes are added (88% → 76%); dense holds at 95%; the
+hybrid keeps the right tool among what the model sees <b>every time</b>, at about 20 ms. Top-1 slips from 79% to 71%, which is
+why the model is shown 5 candidates and picks with their descriptions. Limits: 42 questions, template-generated distractors,
+in-memory Qdrant. Reproduce: <code>python -m paymind.retrieval.eval_tools</code>.</div>
+</section>
 
-<h3>Going to 10,000+ tools and many users</h3>
+<section class="page">
+<h2><span class="n">12</span> Scaling to thousands of customers</h2>
+<p>Today everything runs as one process with SQLite. For thousands of customers the agent design stays the same; the pieces
+around it become shared services, so any number of stateless API instances can serve any request.</p>
+<div class="fig">
+<svg id="f9" viewBox="0 0 900 572" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="p1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#5b6275"/></marker>
+    <marker id="p2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#b42347"/></marker>
+    <style>#f9 .bx{fill:#fff;stroke:#c3c7d6;stroke-width:1.2}#f9 .hl{fill:#eef0ff;stroke:#4f46e5;stroke-width:1.5}#f9 .rd{fill:#fdeef2;stroke:#b42347;stroke-width:1.5}#f9 .gr{fill:#e9f7f0;stroke:#0f7a4b;stroke-width:1.3}#f9 .t{font-size:12.5px;font-weight:700;fill:#18203a}#f9 .d{font-size:10.2px;fill:#5b6275}#f9 .e{stroke:#5b6275;stroke-width:1.3;fill:none;marker-end:url(#p1)}#f9 .er{stroke:#b42347;stroke-width:1.5;fill:none;marker-end:url(#p2);stroke-dasharray:5 3}#f9 .z{font-size:10.5px;fill:#4f46e5;font-weight:800;letter-spacing:.07em}</style>
+  </defs>
+  <rect x="330" y="8" width="240" height="40" rx="8" class="bx"/><text x="344" y="27" class="t">Customers + shop staff</text><text x="344" y="41" class="d">browsers, mobile · HTTPS</text>
+  <rect x="330" y="68" width="240" height="40" rx="8" class="bx"/><text x="344" y="87" class="t">Load balancer / API gateway</text><text x="344" y="101" class="d">TLS · rate limit per user (Redis)</text>
+  <path d="M450 48 V66" class="e"/>
+  <rect x="190" y="128" width="520" height="104" rx="10" class="hl"/>
+  <text x="204" y="148" class="z">STATELESS API + AGENT · N INSTANCES (AUTOSCALED)</text>
+  <rect x="206" y="158" width="150" height="62" rx="7" class="bx"/><text x="218" y="178" class="t">FastAPI + LangGraph</text><text x="218" y="194" class="d">JWT check · agent loop</text><text x="218" y="207" class="d">SSE to the browser</text>
+  <rect x="375" y="158" width="150" height="62" rx="7" class="bx"/><text x="387" y="178" class="t">FastAPI + LangGraph</text><text x="387" y="194" class="d">same image</text><text x="387" y="207" class="d">no local state</text>
+  <rect x="544" y="158" width="150" height="62" rx="7" class="bx"/><text x="556" y="178" class="t">… instance N</text><text x="556" y="194" class="d">any instance can</text><text x="556" y="207" class="d">resume any chat</text>
+  <path d="M450 108 V126" class="e"/>
+  <rect x="10" y="262" width="210" height="150" rx="10" class="rd"/>
+  <text x="24" y="283" class="t">Redis (cache + queue)</text>
+  <text x="24" y="302" class="d">user:{id} → role, payer_id,</text><text x="24" y="315" class="d">  token_version (TTL 5 min)</text>
+  <text x="24" y="332" class="d">whats_new:{id} (TTL 60 s)</text>
+  <text x="24" y="349" class="d">tool_search:{role}:{query}</text><text x="24" y="362" class="d">  (TTL 1 h, cleared on re-index)</text>
+  <text x="24" y="379" class="d">rate limits · LLM quota counters</text>
+  <text x="24" y="396" class="d">job queue for slow work</text>
+  <rect x="240" y="262" width="200" height="150" rx="10" class="gr"/>
+  <text x="254" y="283" class="t">Postgres (primary + replica)</text>
+  <text x="254" y="302" class="d">users · token_version</text><text x="254" y="317" class="d">audit log (partitioned by month)</text><text x="254" y="332" class="d">purchase orders · requests</text><text x="254" y="347" class="d">LangGraph PostgresSaver</text><text x="254" y="362" class="d">  (state + memory, every chat)</text><text x="254" y="380" class="d">reads from the replica</text>
+  <rect x="460" y="262" width="200" height="150" rx="10" class="bx"/>
+  <text x="474" y="283" class="t">Qdrant cluster</text>
+  <text x="474" y="302" class="d">tools collection (sharded,</text><text x="474" y="317" class="d">  payload index on roles,</text><text x="474" y="332" class="d">  service, category)</text><text x="474" y="349" class="d">docs collection</text><text x="474" y="366" class="d">replicas for read load</text>
+  <rect x="680" y="262" width="210" height="150" rx="10" class="bx"/>
+  <text x="694" y="283" class="t">Outside services</text>
+  <text x="694" y="302" class="d">LLM gateway: model chain,</text><text x="694" y="317" class="d">  quotas, retries, cost caps</text><text x="694" y="334" class="d">PayPal REST (OAuth token</text><text x="694" y="349" class="d">  cached in Redis)</text><text x="694" y="366" class="d">Object storage (S3): photos,</text><text x="694" y="381" class="d">  PO scans, invoice PDFs</text><text x="694" y="398" class="d">LangSmith (sampled traces)</text>
+  <path d="M260 232 C 200 245, 130 250, 115 260" class="e"/><path d="M360 232 V260" class="e"/><path d="M540 232 V260" class="e"/><path d="M640 232 C 700 245, 770 250, 785 260" class="e"/>
+  <rect x="10" y="440" width="210" height="58" rx="8" class="bx"/><text x="24" y="461" class="t">Workers (same code)</text><text x="24" y="477" class="d">read handwritten POs (Gemini)</text><text x="24" y="490" class="d">notifications · re-indexing</text>
+  <path d="M115 412 V438" class="e"/>
+  <rect x="240" y="440" width="650" height="124" rx="10" fill="#fff" stroke="#b42347" stroke-dasharray="5 3"/>
+  <text x="254" y="461" class="t" style="fill:#b42347">Cache invalidation: write to Postgres first, then delete the key</text>
+  <text x="254" y="480" class="d">• Role changed / user removed / logout / password change → UPDATE users (token_version + 1) → DEL user:{id}</text>
+  <text x="254" y="496" class="d">   and PUBLISH user-changed:{id}, so every instance drops any in-memory copy. The next request reloads from Postgres.</text>
+  <text x="254" y="514" class="d">• Dispute message / refund / invoice paid → DEL whats_new:{both users}. Tool catalogue re-indexed → DEL tool_search:*.</text>
+  <text x="254" y="532" class="d">• A cache miss or Redis outage falls back to Postgres: the cache only speeds things up, it's never the source of truth.</text>
+  <text x="254" y="548" class="d">• Access is never trusted from the JWT alone: the version in the token must match the (cached) user row.</text>
+  <path d="M340 412 C 340 425, 320 432, 310 438" class="er"/><text x="346" y="430" class="d" style="fill:#b42347;font-weight:700">1 write</text>
+  <path d="M240 478 C 226 470, 220 440, 216 416" class="er"/><text x="150" y="430" class="d" style="fill:#b42347;font-weight:700">2 DEL key</text>
+</svg>
+<div class="cap">Figure 6. Production architecture. Red: the cache and its invalidation path. The agent graph, tools and rules are unchanged; only where state lives changes.</div>
+</div>
 <table>
-  <tr><th style="width:26%">Pressure</th><th>Plan</th></tr>
-  <tr><td>Tool catalogue</td><td>Keep retrieval-first. Add a <b>cross-encoder reranker</b> on the top 20 tools (already used for RAG) to lift top-1; a <b>service/category pre-filter</b> as a payload filter; <b>find_tools</b> remains the fallback. Onboarding a new API is the same offline pipeline: parse → enrich → validate → index.</td></tr>
-  <tr><td>Very different domains</td><td>A router picks a domain, then a <b>domain sub-agent</b> (its own tools, prompt, rules) runs as a LangGraph sub-graph. Only worth it when one prompt can't hold the rules; tool search covers routing until then.</td></tr>
-  <tr><td>Traffic</td><td>The API is stateless (JWT), so it scales horizontally. Move the checkpointer and app data from SQLite to <b>Postgres</b>, add Redis for the per-user role cache (short TTL, cleared on change), run Qdrant as a cluster.</td></tr>
-  <tr><td>LLM cost and limits</td><td>Only one LLM call per round; small tool list keeps prompts short. Paid tier with the same model chain for fallback; cache policy answers.</td></tr>
-  <tr><td>Quality over time</td><td>The eval above becomes a regression test in CI; LangSmith traces feed new test questions from real failures.</td></tr>
+  <tr><th style="width:24%">Pressure</th><th>Answer</th></tr>
+  <tr><td>More users at once</td><td>Stateless API instances behind a load balancer; state in Postgres (PostgresSaver), so any instance resumes any chat or confirmation. SSE keeps one connection per answer.</td></tr>
+  <tr><td>Repeated lookups</td><td>Redis: the user row (role, token version) with a short TTL and delete-on-change; What's new per user; tool-search results per role and query. Cache-aside, always falling back to Postgres.</td></tr>
+  <tr><td>LLM limits and cost</td><td>An LLM gateway with per-user rate limits (Redis counters), the existing model fallback chain, and cost caps. One LLM call per round, with a 5-tool prompt.</td></tr>
+  <tr><td>Slow work</td><td>Reading handwritten POs and sending notifications move to a Redis queue and workers, so chat stays fast.</td></tr>
+  <tr><td>More tools (10,000+)</td><td>Same retrieval-first design; shard the Qdrant collection, add a service/category pre-filter and a cross-encoder reranker on the top 20 tools to lift top-1; domain sub-agents only if one prompt can't hold the rules.</td></tr>
+  <tr><td>Large audit logs</td><td>Postgres partitioned by month; LangSmith traces sampled (all errors and writes, a share of reads).</td></tr>
 </table>
+</section>
 
-<h2>9. Why these technologies</h2>
+<section class="page">
+<h2><span class="n">13</span> Why these choices</h2>
 <table>
-  <tr><th style="width:18%">Choice</th><th>Why</th><th style="width:30%">Considered</th></tr>
-  <tr><td><b>LangGraph</b></td><td>Explicit graph: code decides where the LLM is used, where checks happen, and how loops end. Built-in <code>interrupt()</code> for human approval, checkpointing for memory and resume, streaming, and native LangSmith tracing.</td><td>CrewAI / AutoGen: role-play agents, less control over each step. A hand-written loop: would need pause/resume and persistence rebuilt.</td></tr>
-  <tr><td><b>Qdrant</b></td><td>Sparse (BM25 with IDF) and dense vectors in one collection, server-side RRF fusion, payload filters inside the search (role), local mode for tests and a free cloud tier.</td><td>FAISS: dense only, no filters. Chroma: no native sparse + fusion.</td></tr>
-  <tr><td><b>fastembed</b></td><td>Small ONNX models run locally: embedding, BM25 and the reranker with no API cost and no data leaving the machine.</td><td>Hosted embedding APIs.</td></tr>
-  <tr><td><b>Gemini</b></td><td>Good tool calling, multimodal (reads handwritten purchase orders), free tier for development; wrapped in a fallback chain so any model can be swapped.</td><td>Any tool-calling model fits the same interface.</td></tr>
-  <tr><td><b>LangSmith</b></td><td>Traces LangGraph runs node by node with no extra plumbing; custom spans for search, validation and API calls.</td><td>Langfuse, OpenTelemetry.</td></tr>
+  <tr><th style="width:15%">Choice</th><th>Why</th><th style="width:30%">Considered instead</th></tr>
+  <tr><td><b>LangGraph</b></td><td>An explicit graph: code decides where the LLM runs, where checks happen and how loops end. Built-in <code>interrupt()</code> for human approval, checkpointing for memory and resume, token streaming, and native LangSmith tracing.</td><td>CrewAI / AutoGen: role-play agents, less control per step. A hand-written loop: pause/resume and persistence rebuilt by hand.</td></tr>
+  <tr><td><b>Single agent + retrieval</b></td><td>Routing by search costs no LLM call and is measurable (section 11); safety stays in code.</td><td>A supervisor with specialist agents: more calls and latency; kept as the growth path.</td></tr>
+  <tr><td><b>Qdrant</b></td><td>Sparse (BM25 with IDF) and dense vectors in one collection, server-side RRF, filters inside the search, local mode for tests, managed cloud.</td><td>FAISS: dense only, no filters. Chroma: no native sparse + fusion. pgvector: no BM25 fusion built in.</td></tr>
+  <tr><td><b>Hybrid search</b></td><td>Keywords catch exact terms and IDs; vectors catch meaning; RRF merges by rank, so no score tuning.</td><td>Dense only: 95% top-5 at 1,012 tools vs 100% hybrid. BM25 only: 76%.</td></tr>
+  <tr><td><b>fastembed</b></td><td>Small ONNX models run locally (embeddings, BM25, reranker): no API cost, no data leaving the machine, fast.</td><td>Hosted embedding APIs.</td></tr>
+  <tr><td><b>Gemini</b></td><td>Reliable tool calling, multimodal (handwritten POs), streaming; wrapped in a fallback chain, so the model is swappable.</td><td>Any tool-calling model fits the same interface.</td></tr>
+  <tr><td><b>LangSmith</b></td><td>Traces LangGraph node by node with no plumbing; <code>@traceable</code> adds our own spans.</td><td>Langfuse, OpenTelemetry.</td></tr>
+  <tr><td><b>FastAPI + SSE</b></td><td>Typed endpoints, dependency-injected auth, simple one-way streaming for answers.</td><td>WebSockets: two-way, not needed.</td></tr>
 </table>
+</section>
 
-<h2>10. Limitations and next steps</h2>
+<section>
+<h2><span class="n">14</span> Limitations and next steps</h2>
 <ul>
-  <li>PayPal is a <b>mock server</b> (real request/response shapes, 30 stateful endpoints); the next step is the PayPal sandbox with OAuth.</li>
-  <li>The scaling eval is small (42 questions); grow it from real traces and run it in CI. Add the tool reranker and measure top-1.</li>
-  <li>Production: Postgres instead of SQLite, HTTPS, secrets manager, rate limiting, and LLM-call evaluation (tool-choice accuracy, end-to-end task success).</li>
+  <li>PayPal is a <b>mock server</b> with real request/response shapes; the next step is the PayPal sandbox with OAuth.</li>
+  <li>The scaling eval is small (42 questions); grow it from real traces, run it in CI, and add the tool reranker to lift top-1.</li>
+  <li>Measure end-to-end task success and tool-choice accuracy with the LLM, not only retrieval.</li>
+  <li>Production hardening from section 12: Postgres, Redis, HTTPS, secrets manager, rate limits, object storage.</li>
 </ul>
+</section>
 
 </body>
 </html>

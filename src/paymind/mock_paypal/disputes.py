@@ -58,6 +58,8 @@ def refund_buyer(store: Store, dispute: dict, amount=None, note: str | None = No
     capture = store.db.get("captures", dispute["disputed_transactions"][0]["seller_transaction_id"])
     remaining = amount_of(capture["amount"]) - amount_of(capture["refunded_amount"])
     refund_amount = min(amount if amount is not None else amount_of(dispute["dispute_amount"]), remaining)
+    if refund_amount <= 0:
+        raise PayPalError(422, "NOTHING_TO_REFUND", "This payment has already been refunded in full.", "refund_amount")
     refund = store.create_refund(capture, refund_amount, note or f"Dispute {dispute['dispute_id']} resolved")
     dispute["refund_id"] = refund["id"]
     return refund
@@ -107,23 +109,34 @@ def open_dispute(store: Store, body: dict) -> dict:
     })
 
 
+def shop_acted(store: Store, dispute: dict, action: dict) -> None:
+    """Record what the shop did (refund or replacement). The case then waits for the customer."""
+    dispute.pop("offer", None)
+    dispute["seller_action"] = {**{k: v for k, v in action.items() if v is not None}, "time": iso(store.now())}
+
+
 def buyer_closes(store: Store, dispute_id: str, body: dict) -> dict:
-    """The buyer is satisfied (e.g. the shop already refunded) and closes the case, with a closing message."""
+    """Only the customer closes a case: after the shop refunded or sent a replacement, or any time
+    they're satisfied. The outcome records what the shop did."""
     dispute = get_open_dispute(store, dispute_id)
     note = str(body.get("message") or "").strip() or "I'm happy with how this was sorted out, so I'm closing this case."
     dispute.setdefault("messages", []).append({"posted_by": "BUYER", "time_posted": iso(store.now()), "content": f"✅ {note}"})
-    dispute.pop("offer", None)
-    dispute["dispute_outcome"] = {"outcome_code": "CANCELED_BY_BUYER", "closed_by": "BUYER"}
+    action = dispute.get("seller_action") or {}
+    if action.get("type") == "refund":
+        outcome = {"outcome_code": "RESOLVED_BUYER_FAVOUR", "amount_refunded": action.get("amount")}
+    elif action.get("type") == "replacement":
+        outcome = {"outcome_code": "RESOLVED_WITH_REPLACEMENT", "carrier": action.get("carrier"), "tracking_number": action.get("tracking_number")}
+    else:
+        outcome = {"outcome_code": "CANCELED_BY_BUYER"}
+    dispute["dispute_outcome"] = {**outcome, "closed_by": "BUYER"}
     return update(store, dispute, "RESOLVED", "RESOLVED")
 
 
 def close_with_replacement(store: Store, dispute_id: str, body: dict) -> dict:
-    """The shop settles the case by sending a replacement: no refund, the case closes."""
+    """The shop sends a replacement (no money moves); the case waits for the customer to confirm."""
     dispute = get_open_dispute(store, dispute_id)
-    dispute.pop("offer", None)
-    dispute["dispute_outcome"] = {"outcome_code": "RESOLVED_WITH_REPLACEMENT", "closed_by": "SELLER",
-                                  "carrier": body.get("carrier"), "tracking_number": body.get("tracking_number")}
-    return update(store, dispute, "RESOLVED", "RESOLVED")
+    shop_acted(store, dispute, {"type": "replacement", "carrier": body.get("carrier"), "tracking_number": body.get("tracking_number")})
+    return update(store, dispute, "WAITING_FOR_BUYER_RESPONSE", "REQUIRED_OTHER_PARTY_ACTION")
 
 
 def summary(d: dict) -> dict:
@@ -156,12 +169,16 @@ def show_dispute_details(request: Request, dispute_id: str):
 
 @router.post("/{dispute_id}/accept-claim")
 def accept_claim(request: Request, dispute_id: str, body: dict = Body(default={})):
-    """Seller accepts the buyer's claim: full refund, dispute resolved for the buyer."""
+    """The shop refunds the buyer: the disputed amount, or refund_amount (partial). PayMind rule: the
+    case isn't closed by the shop; it waits for the customer to confirm (only the customer closes)."""
     store = store_of(request)
     dispute = get_open_dispute(store, dispute_id)
-    refund_buyer(store, dispute, note=body.get("note"))
-    dispute["dispute_outcome"] = {"outcome_code": "RESOLVED_BUYER_FAVOUR", "amount_refunded": dispute["dispute_amount"], "closed_by": "SELLER"}
-    return update(store, dispute, "RESOLVED", "RESOLVED")
+    amount = amount_of(body["refund_amount"]) if body.get("refund_amount") else None
+    if amount is not None and (amount <= 0 or amount > amount_of(dispute["dispute_amount"])):
+        raise PayPalError(422, "INVALID_REFUND_AMOUNT", "The refund must be between 0.01 and the disputed amount.", "refund_amount")
+    refund = refund_buyer(store, dispute, amount, note=body.get("note"))
+    shop_acted(store, dispute, {"type": "refund", "amount": refund["amount"], "refund_id": refund["id"], "note": body.get("note")})
+    return update(store, dispute, "WAITING_FOR_BUYER_RESPONSE", "REQUIRED_OTHER_PARTY_ACTION")
 
 
 @router.post("/{dispute_id}/make-offer")

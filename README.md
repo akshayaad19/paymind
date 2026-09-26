@@ -9,7 +9,7 @@ A scalable tool-calling agent for PayPal. Users chat in plain English ("Send an 
 | 📄 **Design document** | [docs/PayMind_Design.pdf](docs/PayMind_Design.pdf): architecture, agent structure, routing, state, error handling, observability, scaling results, framework choice |
 | 🎥 **Demo video** | _link to be added_ |
 | 📈 **Scaling result** | At **1,012 tools** (112 real + 900 deliberately confusing look-alikes), the right tool is in the top 5 for **100%** of test questions, at ~20 ms per search ([details](#step-7-scaling-evaluation-)) |
-| ✅ **Tests** | 231, run without any LLM (`.venv/bin/pytest`) |
+| ✅ **Tests** | 234, run without any LLM (`.venv/bin/pytest`) |
 
 ## Architecture
 
@@ -46,7 +46,7 @@ cp .env.example .env        # add GOOGLE_API_KEY, JWT_SECRET (32+ random chars),
 .venv/bin/uvicorn paymind.mock_paypal.app:create_app --factory --port 8000   # mock PayPal
 .venv/bin/uvicorn paymind.api.server:create_app --factory --port 8001        # app → http://localhost:8001
 
-.venv/bin/pytest                                   # 231 tests, no LLM needed
+.venv/bin/pytest                                   # 234 tests, no LLM needed
 .venv/bin/python -m paymind.retrieval.eval_tools   # scaling evaluation (local, no LLM)
 .venv/bin/python -m paymind.mock_paypal.reset      # back to the demo data
 ```
@@ -710,11 +710,11 @@ On the delivery date the customer is asked "Has it arrived?" → Delivered, or N
 - The assistant's `order_status` tool answers "where is my order?" / "which orders do I need to ship?", and `check_updates` includes every PO reminder.
 - Tested live: a generated handwritten PO photo was read correctly (PO number, all three items, the missing price left blank, needed-by date, delivery note), then taken all the way to Delivered.
 
-**Disputes are between the shop and the customer only.** PayMind is the seller's portal: there's no PayPal review. The shop resolves a dispute with **Resolve…** in the dispute panel: **Refund in full** (the dispute closes) or **Make an offer** (a partial refund the customer accepts or declines by telling the assistant in chat). PayPal's review tools (escalate to a claim, send evidence to PayPal, appeal, and PayPal's sandbox settle/status tools) are **switched off** in `tools.json` (`"disabled": true`, no allowed roles), so search never offers them and the validator blocks them for everyone.
+**Disputes are between the shop and the customer only.** PayMind is the seller's portal: there's no PayPal review. The shop acts on a dispute with **Resolve…** in the dispute panel: **Refund** (the full disputed amount, or a partial amount it chooses) or **Send a replacement**. There are **no offers**: a refund is never something the customer can decline, so PayPal's offer tools are switched off. **Only the customer closes a dispute**: after the shop acts, the case shows *"Refunded · please confirm"* for the customer and *"waiting for customer"* for the shop, until the customer clicks **✅ Mark as resolved**. PayPal's review tools (escalate to a claim, send evidence to PayPal, appeal, and PayPal's sandbox settle/status tools) are **switched off** in `tools.json` (`"disabled": true`, no allowed roles), so search never offers them and the validator blocks them for everyone.
 
 **Acting for a customer named in words ("refund 49 to Rahul"), at any number of customers:** the shop-only `customer_payments` tool finds every customer whose name, email or payer ID matches, each with their recent payments. If several customers or payments match, the assistant must list them (name and email; date, items and amount) and ask which one; it also asks for a refund reason, which is sent to the customer. Two rules are enforced in code, not left to the model: a payment with an **open dispute can't be refunded directly** (it's sent back: settle it with `accept_claim` or an offer), and every confirmation for a payment ends with **who gets the money and for what**, looked up from PayPal (*To: Rahul Sharma (rahul.sharma@example.com) · For: Wireless Headphones × 1, paid 79.99 USD on 2026-09-18*), so the person approving checks the real customer, not the model's description.
 
-**Closing a case and telling the other side:** a customer who's satisfied (refund arrived, parcel came) closes the case with **✅ Mark as resolved** in the case, or by telling the assistant (`close_case`, confirmed). Every close records who closed it (`dispute_outcome.closed_by`), and **What's new tells the other side** until they open the case: the shop sees *"✅ Rahul Sharma's case was closed · marked resolved by the customer"*, the customer sees *"✅ The shop resolved your case · refunded $79.99"* (or the replacement's tracking number). Customers also get *"💸 PayMind Demo Store refunded you $49.00"* for any refund on their payments in the last 14 days, however it was made. A closed case shows how it ended at the top, and an open offer shows a hint to answer it in Chat.
+**Closing a case and telling the other side:** a customer who's satisfied (refund arrived, parcel came) closes the case with **✅ Mark as resolved** in the case, or by telling the assistant (`close_case`, confirmed). Every close records who closed it (`dispute_outcome.closed_by`), and **What's new tells the other side** until they open the case: the shop sees *"✅ Rahul Sharma closed their case · refunded ($79.99)"*; after a refund or replacement the customer sees *"✅ PayMind Demo Store refunded you $79.99. If you're happy, mark the case resolved"*. Customers also get *"💸 PayMind Demo Store refunded you $49.00"* for any refund on their payments in the last 14 days, however it was made. A closed case shows how it ended at the top. **Overdue invoices are the accountant's to sort out**: Remind, Mark paid (paid another way) or Cancel, from the Invoices table or straight from What's new.
 
 **What a case is about:** every dispute panel starts with the purchase behind it: items (from PayPal's `cart_info`), amount, refunds, how and when it was paid, and the latest **shipment** (PayPal's tracking API: carrier, tracking number, status). The shop can add or update tracking right there (**Add tracking**), and the customer sees the same line, so "where is my order?" is answered in the case itself (the assistant's `my_purchases` returns shipments too).
 
@@ -732,7 +732,7 @@ On the delivery date the customer is asked "Has it arrived?" → Delivered, or N
 
 | Kind | Meaning | Button |
 |---|---|---|
-| 🔴 Action needed | PayPal says it's your turn (the shop must respond, or the customer must answer an offer), with PayPal's **deadline**: *respond by 28 Sep (3 days left)* or *overdue by N days*. Shown on every login until the dispute's status changes; a holding message doesn't clear it | Open |
+| 🔴 Action needed | PayPal says it's your turn (the shop must respond), with PayPal's **deadline**: *respond by 28 Sep (3 days left)* or *overdue by N days*. Shown on every login until the dispute's status changes; a holding message doesn't clear it | Open |
 | 📬 New message | The other side wrote and you haven't seen it | Open |
 | ✍️ Waiting for your reply | They wrote, you've seen it, you haven't answered | Reply |
 | ⏳ No reply yet | You wrote 2+ days ago and they haven't answered | Send a reminder (the assistant drafts it, you approve) |
