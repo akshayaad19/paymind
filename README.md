@@ -7,7 +7,9 @@ A scalable tool-calling agent for PayPal. Users chat in plain English ("Send an 
 | | |
 |---|---|
 | 📄 **Design document** | [docs/PayMind_Design.pdf](docs/PayMind_Design.pdf): architecture, agent structure, routing, state, error handling, observability, scaling results, framework choice |
-| 🎥 **Demo video** | _link to be added_ |
+| 🎥 **Demo video** 
+
+
 | 📈 **Scaling result** | At **1,012 tools** (112 real + 900 deliberately confusing look-alikes), the right tool is in the top 5 for **100%** of test questions, at ~20 ms per search ([details](#step-7-scaling-evaluation-)) |
 | ✅ **Tests** | 236, run without any LLM (`.venv/bin/pytest`) |
 
