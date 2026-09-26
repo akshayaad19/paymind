@@ -1088,7 +1088,7 @@ function renderThread(res) {
   $("#thread").innerHTML = purchaseBox(res.purchase, shopView && res.can_reply) + requestLine + offerHint + outcome + photos + res.messages.map((m) => `
     <div class="tmsg ${m.from === mine ? "mine" : ""}">
       <div class="who">${esc(m.from === mine ? "You" : m.name)} · ${shortDate(m.time)}</div>
-      <div class="text">${esc(m.text)}</div>
+      <div class="text">${esc(m.text.replace(/\\r?\\n/g, "\n"))}</div>
     </div>`).join("") || `<p class="muted">No messages yet.</p>`;
   $("#thread").scrollTop = $("#thread").scrollHeight;
   loadPhotos(d.dispute_id);

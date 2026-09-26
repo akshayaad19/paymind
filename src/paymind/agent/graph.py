@@ -135,6 +135,18 @@ def search_query(messages: list[AnyMessage]) -> str:
     return latest
 
 
+def real_line_breaks(value: Any) -> Any:
+    """Models sometimes write a message's line breaks as the two characters backslash-n (escaped
+    twice in the tool call). Turn them back into real line breaks in every text parameter."""
+    if isinstance(value, str):
+        return value.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+    if isinstance(value, dict):
+        return {k: real_line_breaks(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [real_line_breaks(v) for v in value]
+    return value
+
+
 def user_of(config: dict, appdb: AppDatabase) -> User:
     user = appdb.get_user(config["configurable"]["user_id"])
     if user is None:
@@ -191,7 +203,7 @@ def build_graph(deps: Deps, checkpointer=None):
         user = user_of(config, deps.appdb)
         decisions: dict[str, dict] = {}
         for call in state["messages"][-1].tool_calls:
-            name, args = call["name"], call.get("args") or {}
+            name, args = call["name"], real_line_breaks(call.get("args") or {})
             if name in (SHOP_ONLY if user.is_customer else CUSTOMER_ONLY):
                 who = "the shop" if user.is_customer else "customers"
                 decisions[call["id"]] = {"outcome": "blocked", "params": args, "errors": [f"{name} is for {who} only"]}

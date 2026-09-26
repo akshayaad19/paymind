@@ -742,3 +742,17 @@ def test_in_store_purchase_gets_at_most_half_back(world):
     assert "a refund of 39.99 USD" in q                                                    # 50% of 79.99, rounded down
     replacement = make_agent(world, problem_script(buy["payment_id"], wants="replacement"), ["list_disputes"])
     assert "a replacement" in replacement.send("u_rahul", "s3", "replace them").confirmation["question"]
+
+
+def test_escaped_line_breaks_become_real_ones(world):
+    """A model that writes backslash-n inside a message still sends a message with real line breaks."""
+    mock = world[0]
+    d = dispute_of(mock, "user_123")
+    llm = ScriptedLLM([AIMessage("", tool_calls=[call("send_message_about_dispute_to_other_party",
+                                                      {"dispute_id": d["dispute_id"], "message": "Hello,\\n\\nAny update?\\nRahul"})]),
+                       AIMessage("Sent.")])
+    agent = make_agent(world, llm, ["send_message_about_dispute_to_other_party", "list_disputes"])
+    reply = agent.send("u_rahul", "s1", f"ask the shop for an update on {d['dispute_id']}")
+    assert "\\n" not in reply.confirmation["question"] and "Hello,\n\nAny update?\nRahul" in reply.confirmation["question"]
+    agent.answer("u_rahul", "s1", approve=True)
+    assert mock.state.store.db.get("disputes", d["dispute_id"])["messages"][-1]["content"] == "Hello,\n\nAny update?\nRahul"

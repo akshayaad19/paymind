@@ -1,42 +1,57 @@
 # PayMind
 
-A scalable tool-calling agent for payment operations. Users chat in plain English ("Send an invoice for $50 to john@x.com", "Is there a dispute open from user_123?") and the agent picks the right API, fills in the parameters, validates the call and executes it.
+A scalable tool-calling agent for PayPal. Users chat in plain English ("Send an invoice for $50 to john@x.com", "What was my total sales volume last month?", "Is there a dispute open from user_123?") and the agent finds the right API among 112, fills in the parameters, has code validate the call, asks the user to confirm anything that changes data, and runs it.
 
-The core problem: LLM accuracy drops as you attach more tools. PayMind never shows the LLM every tool. It searches a tool index first and passes only the top few matches, so the number of tools stops being a hard limit.
+**The core problem:** an LLM gets worse at choosing tools as you give it more of them. PayMind never shows the model every tool. Each message first runs a role-filtered **hybrid search** (BM25 + dense vectors, merged with RRF) over the tool catalogue and offers only the **top 5**, plus a few always-available built-ins: the **RAG pipeline tool** (`rag_search`) and the **System Search tool** (`system_search`), among others.
 
-The demo uses PayPal's REST API collection (116 APIs) against a mock backend, plus ~450 synthetic tool cards to test tool selection at scale.
+| | |
+|---|---|
+| 📄 **Design document** | [docs/PayMind_Design.pdf](docs/PayMind_Design.pdf): architecture, agent structure, routing, state, error handling, observability, scaling results, framework choice |
+| 🎥 **Demo video** | _link to be added_ |
+| 📈 **Scaling result** | At **1,012 tools** (112 real + 900 deliberately confusing look-alikes), the right tool is in the top 5 for **100%** of test questions, at ~20 ms per search ([details](#step-7-scaling-evaluation-)) |
+| ✅ **Tests** | 231, run without any LLM (`.venv/bin/pytest`) |
 
 ## Architecture
 
 ```
-OFFLINE
-  Postman collection ──► Parser ──► LLM enricher ──► tools.json ──► fastembed ──► Qdrant "tools"
-  Policy / help docs ──► Heading + recursive splitter ──────────────► fastembed ──► Qdrant "docs"
+OFFLINE (once, when the API catalogue changes)
+  Postman collection ─► Parser ─► Enricher (Gemini, schema-checked, example calls dry-run) ─► tools.json ─► Qdrant "tools"
+  Policy docs (5 shop + 10 PayPal) ─► split by heading → 2,000 chars ───────────────────────────────► Qdrant "docs"
 
-RUNTIME (LangGraph)
-  rewrite_query ──► search_tools (hybrid BM25 + dense, RRF, role filter → top 5)
-               ──► agent (ReAct; always has rag_search, system_search, find_tools)
-               ──► validator (schema, role, grounding, confirmation)
-               ──► executor ──► mock payments API
+ONLINE (every message)
+  Web app ─► FastAPI (JWT; role read from the DB) ─► LangGraph agent ─► Executor ─► PayPal REST (mock server)
+                                                     │
+      search_tools (code) ─► agent (Gemini) ─► gate (code: validate, scope, ask Yes/No) ─► tools (code) ─┐
+            ▲                     ▲                                                                   │
+            │                     └──────────────────── results (max 8 rounds) ◄───────────────────────┘
+      hybrid search, role filter → top 5 + built-ins          answer streamed + receipt written by code
+
+  Around it: checkpointer (state, memory, pause/resume) · app DB (users, audit log, requests, photos, POs) · LangSmith traces
 ```
-
-Cross-cutting: audit log, checkpointed state, LangSmith tracing, evaluation harness.
 
 ## Stack
 
-LangGraph · LangChain · Qdrant · fastembed · FastAPI · SQLite · LangSmith · Streamlit
+LangGraph · Gemini (model fallback chain) · Qdrant Cloud (BM25 + dense, RRF) · fastembed (embeddings, BM25, reranker) · FastAPI · SQLite · LangSmith · plain HTML/CSS/JS front end
 
 ## Getting started
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e ".[dev]"
+cp .env.example .env        # add GOOGLE_API_KEY, JWT_SECRET (32+ random chars), optional QDRANT_URL/QDRANT_API_KEY, LANGSMITH_API_KEY
 
-# Postman collection → raw tool cards + example responses
-.venv/bin/python -m paymind.ingest.postman_parser
+.venv/bin/python -m paymind.retrieval.tool_index build      # index the tool cards
+.venv/bin/python -m paymind.ingest.docs fetch && .venv/bin/python -m paymind.ingest.docs build   # policy docs for RAG
 
-.venv/bin/pytest
+.venv/bin/uvicorn paymind.mock_paypal.app:create_app --factory --port 8000   # mock PayPal
+.venv/bin/uvicorn paymind.api.server:create_app --factory --port 8001        # app → http://localhost:8001
+
+.venv/bin/pytest                                   # 231 tests, no LLM needed
+.venv/bin/python -m paymind.retrieval.eval_tools   # scaling evaluation (local, no LLM)
+.venv/bin/python -m paymind.mock_paypal.reset      # back to the demo data
 ```
+
+Demo logins: see [Demo logins](#demo-logins) below.
 
 ## Who uses it and how access is controlled
 
@@ -648,7 +663,7 @@ Browser                                    PayMind API (FastAPI, port 8001)
 
 Tested: login, wrong password, no token, expired token, **forged token** (signed with another key), **logout revokes copies**, password change revokes old tokens, role-from-database, customer scoping, private chat threads, and that developer-only features (tool search, health, demo reset) are not reachable from the app.
 
-**Demo logins**
+#### Demo logins
 
 | User | Email | Password | Role |
 |---|---|---|---|
@@ -784,6 +799,18 @@ RUNTIME   rag_search(query) → hybrid search → top 20 → cross-encoder reran
 
 Each `rag_search` is a step in the LangSmith trace (query, passages, scores).
 
+## Step 7: Scaling evaluation ✅
+
+Does tool search still find the right tool when the catalogue grows to 1,000+ tools? `python -m paymind.retrieval.eval_tools` searches **42 hand-written questions** (not taken from the tool cards, so nothing is copied from the index) over the 112 real tools, then with **400 and 900 synthetic tools** from 25 look-alike services (other payment, billing, CRM, accounting, shipping and support APIs) that deliberately reuse PayPal's vocabulary ("refund a charge", "list invoices", "respond to dispute"). It runs locally (in-memory Qdrant, fastembed), with no LLM. Raw numbers: [docs/tool_retrieval_eval.json](docs/tool_retrieval_eval.json).
+
+| Tools | BM25 top-5 | Dense top-5 | **Hybrid top-5** | Hybrid top-1 | ms / search |
+|---|---|---|---|---|---|
+| 112 | 88% | 95% | **100%** | 79% | 21 |
+| 512 | 79% | 95% | **100%** | 76% | 20 |
+| 1,012 | 76% | 95% | **100%** | 71% | 23 |
+
+Keyword search alone degrades as look-alikes are added; dense holds; the hybrid keeps the right tool among the 5 the model sees every time. Top-1 drops a little, which is why the model is shown 5 candidates and picks with their descriptions. Next steps: a cross-encoder reranker for tools (already used for RAG) and a larger question set from real traces.
+
 ## Status
 
-Design complete; steps 1–6 done (parser, enricher, tool index, mock PayPal, agent + web app, RAG). Write actions re-tested live: "Send an invoice for $50 to john@x.com" now creates and sends the invoice in 12 s with two confirmations (it failed before the example calls were added). Next: the scaling evaluation, then the design document.
+All steps done: parser, enricher, tool index, mock PayPal, agent + web app, RAG, scaling evaluation, and the [design document](docs/PayMind_Design.pdf). The web app is a working seller's portal: disputes end to end (messages, photos, refund or replacement, tracking, closing cases with notifications), purchase orders from handwritten PO to delivery, invoices (PDF, send, pay), streaming chat with a code-written receipt under every reply, and LangSmith traces for every message.
